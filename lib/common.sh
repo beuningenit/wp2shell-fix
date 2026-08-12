@@ -221,7 +221,8 @@ sanitize_text() {
     cleaned=${cleaned%.}
     if [ "${WP2SHELL_HAS_ICONV:-0}" = "1" ]; then
         local converted
-        if converted=$(printf '%s.' "$cleaned" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null); then
+        converted=$(printf '%s.' "$cleaned" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null) || true
+        if [ -n "$converted" ]; then
             cleaned=${converted%.}
         fi
     fi
