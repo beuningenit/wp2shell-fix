@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 
 WP2SHELL_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 WP2SHELL_TOOLKIT_VERSION="1.0.0"
@@ -7,6 +7,10 @@ WP2SHELL_TOOLKIT_VERSION="1.0.0"
 . "$WP2SHELL_ROOT/lib/common.sh"
 . "$WP2SHELL_ROOT/lib/version.sh"
 . "$WP2SHELL_ROOT/lib/discovery.sh"
+. "$WP2SHELL_ROOT/lib/backup.sh"
+. "$WP2SHELL_ROOT/lib/quarantine.sh"
+. "$WP2SHELL_ROOT/lib/clean.sh"
+. "$WP2SHELL_ROOT/lib/harden.sh"
 . "$WP2SHELL_ROOT/lib/report.sh"
 
 OPT_SUBCOMMAND=""
@@ -371,23 +375,148 @@ report_version_findings() {
     return 0
 }
 
+run_detection_over_sites() {
+    local line site_path owner_user domain rc
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        owner_user=$(site_record_field "$line" effective_user) || owner_user=''
+        domain=$(site_record_field "$line" domain) || domain=''
+        if [ -z "$site_path" ]; then
+            continue
+        fi
+        ( detect_all_for_site "$site_path" "$owner_user" "$domain" )
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_warn "Detectie op $site_path eindigde met exitcode $rc"
+        fi
+    done < "$WP2SHELL_SITES_FILE"
+    if declare -F detect_logs_server_wide >/dev/null 2>&1; then
+        detect_logs_server_wide || true
+    fi
+    return 0
+}
+
+detect_all_for_site() {
+    local site_path=$1 owner_user=$2 domain=$3
+    if declare -F detect_files_for_site >/dev/null 2>&1; then
+        detect_files_for_site "$site_path" "$owner_user" || true
+    fi
+    if declare -F detect_wp_for_site >/dev/null 2>&1; then
+        detect_wp_for_site "$site_path" "$owner_user" || true
+    fi
+    if declare -F detect_logs_for_site >/dev/null 2>&1; then
+        detect_logs_for_site "$site_path" "$domain" || true
+    fi
+    return 0
+}
+
 command_scan() {
     log_info "Start read-only scan"
     if ! discover_sites "$WP2SHELL_SITES_FILE" "$OPT_SITE" "$OPT_USER"; then
         die "$EXIT_INTERNAL" "Discovery is mislukt"
     fi
     classify_discovered_sites "$WP2SHELL_SITES_FILE"
+    run_detection_over_sites
+    return 0
+}
+
+iterate_sites() {
+    local handler=$1
+    local total=0 failed=0 line site_path owner_user target_version rc
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        owner_user=$(site_record_field "$line" effective_user) || owner_user=''
+        target_version=$(site_record_field "$line" target_version) || target_version=''
+        if [ -z "$site_path" ] || [ -z "$owner_user" ]; then
+            log_warn "Siterecord zonder pad of eigenaar wordt overgeslagen"
+            continue
+        fi
+        total=$((total + 1))
+        ( "$handler" "$site_path" "$owner_user" "$target_version" )
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            failed=$((failed + 1))
+            log_error "Verwerking van $site_path is mislukt met exitcode $rc, de overige sites gaan door"
+            record_finding \
+                "site=$site_path" \
+                "severity=$SEVERITY_MEDIUM" \
+                "confidence=$CONFIDENCE_HIGH" \
+                "category=site-processing-failed" \
+                "title=Verwerking van deze site is mislukt" \
+                "detail=De verwerking eindigde met exitcode $rc. Andere sites zijn wel verwerkt. Deze site is niet volledig behandeld en mag niet als schoon gelden." \
+                "remediation=Bekijk het runlogboek voor de oorzaak en behandel deze site opnieuw."
+        fi
+    done < "$WP2SHELL_SITES_FILE"
+    log_info "$total sites verwerkt, $failed mislukt"
+    return 0
+}
+
+handle_clean_site() {
+    local site_path=$1 owner_user=$2 target_version=$3
+    clean_site "$site_path" "$owner_user" "$OPT_APPLY" "$OPT_REMOVE_ADMINS" "$OPT_MAINTENANCE" "$target_version"
+}
+
+handle_harden_site() {
+    local site_path=$1 owner_user=$2 target_version=$3
+    local exposed=0
+    if [ -n "$target_version" ]; then
+        exposed=1
+    fi
+    update_core_for_site "$site_path" "$owner_user" "$OPT_APPLY" "$target_version" || true
+    harden_htaccess_for_site "$site_path" "$OPT_APPLY" || true
+    harden_wp_configuration "$site_path" "$owner_user" "$OPT_APPLY" || true
+    rotate_salts_for_site "$site_path" "$owner_user" "$OPT_APPLY" "$exposed" || true
+    normalize_permissions_for_site "$site_path" "$owner_user" "$OPT_APPLY" || true
+    remove_stopgap_muplugin "$site_path" "$OPT_APPLY" 1 || true
+    return 0
+}
+
+verify_hardening_after_restart() {
+    local line site_path url
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        url=$(site_record_field "$line" url) || url=''
+        if [ -n "$site_path" ] && [ -n "$url" ]; then
+            verify_hardening_enforced "$site_path" "$url" || true
+        fi
+    done < "$WP2SHELL_SITES_FILE"
     return 0
 }
 
 command_clean() {
-    log_error "Het subcommando clean is nog niet beschikbaar in deze versie"
-    return "$EXIT_INTERNAL"
+    log_info "Start opschoning"
+    if ! discover_sites "$WP2SHELL_SITES_FILE" "$OPT_SITE" "$OPT_USER"; then
+        die "$EXIT_INTERNAL" "Discovery is mislukt"
+    fi
+    classify_discovered_sites "$WP2SHELL_SITES_FILE"
+    run_detection_over_sites
+    iterate_sites handle_clean_site
+    return 0
 }
 
 command_harden() {
-    log_error "Het subcommando harden is nog niet beschikbaar in deze versie"
-    return "$EXIT_INTERNAL"
+    log_info "Start hardening"
+    if ! discover_sites "$WP2SHELL_SITES_FILE" "$OPT_SITE" "$OPT_USER"; then
+        die "$EXIT_INTERNAL" "Discovery is mislukt"
+    fi
+    classify_discovered_sites "$WP2SHELL_SITES_FILE"
+    iterate_sites handle_harden_site
+    enable_softaculous_auto_upgrade "$OPT_APPLY" || true
+    if restart_openlitespeed_if_needed "$OPT_APPLY"; then
+        if [ "$OPT_APPLY" = "1" ] && [ "$WP2SHELL_RESTART_REQUIRED" = "1" ]; then
+            verify_hardening_after_restart
+        fi
+    fi
+    return 0
 }
 
 command_report() {

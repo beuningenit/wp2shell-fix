@@ -34,6 +34,8 @@ commandoregel in `tools/lint.sh`, met deze motivering:
   ongebruikt maar worden door de andere modules geconsumeerd.
 - `SC2016`: strings met `$argv[1]` of `$wp_version` zijn PHP-broncode of een grep-patroon. Die mogen
   juist niet door Bash geexpandeerd worden.
+- `SC2329`: handlerfuncties worden indirect aangeroepen via een variabele, zodat elk subcommando
+  dezelfde per-site isolatie gebruikt.
 - `SC2254`: allowlist-entries zijn bewust globs, geen letterlijke strings. `*@beuningenit.nl` en
   `/home/*/domains/*/public_html/maatwerk/*` moeten als patroon matchen.
 
@@ -115,8 +117,24 @@ enig signaal.
 
 ## Bash-veiligheidsregels
 
-- `set -euo pipefail` in elk uitvoerbaar script, met bewuste per-site foutisolatie eromheen zodat
-  principe 6 gehaald wordt.
+- `set -uo pipefail` in het entrypoint, bewust **zonder** `-e`. Met `-e` kan een falende site de hele
+  run afbreken en kan de exitcode van de subshell niet opgevangen worden, en dan sneuvelt principe 6.
+- Per-site isolatie heeft precies een correcte vorm:
+
+  ```
+  ( verwerk_site "$site" )
+  rc=$?
+  ```
+
+  De subshell moet een **losstaande opdracht** zijn en `rc` moet op de volgende regel opgevangen
+  worden. Schrijf nooit `( ... ) || afhandelaar` en ook niet `if ! ( ... )`. Door de subshell in een
+  conditie te plaatsen zet Bash `set -e` uit voor de hele looptijd ervan, ook wanneer de subshell zelf
+  `set -e` opnieuw aanzet. Dat is geverifieerd gedrag en het faalt stil.
+- Vertrouw voor kritieke voorwaarden niet op `set -e` maar controleer expliciet. De regel dat er nooit
+  opgeschoond wordt zonder geslaagde backup is daarom een expliciete `if ! ensure_backup...; then
+  return 1; fi` en geen impliciet neveneffect.
+- `grep -q` geeft exitcode 1 als er niets matcht, en bij een malwarescanner is dat het normale geval.
+  Vang elke detectie-grep af.
 - Padverwerking altijd via `find -print0` met `while IFS= read -r -d ''`. Bestandsnamen in
   klantmappen zijn door aanvallers te kiezen en bevatten spaties, newlines en aanhalingstekens.
 - Symlinks nooit blind volgen. Aanvallers planten symlinks om buiten de docroot te komen. Gebruik
