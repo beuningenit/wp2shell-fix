@@ -223,18 +223,18 @@ detect_wp_evaluate_text_signals() {
     if strong=$(detect_wp_strong_pattern_match "$text"); then
         WP2SHELL_DETECT_WP_SIGNAL_SEVERITY="$SEVERITY_CRITICAL"
         WP2SHELL_DETECT_WP_SIGNAL_CONFIDENCE="$CONFIDENCE_HIGH"
-        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="bevestigd IOC-patroon: $strong"
+        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="Bevestigd IOC-patroon aangetroffen: $strong."
         return 0
     fi
     count=$(detect_wp_generic_marker_count "$text")
     if [ "$count" -ge 2 ]; then
         WP2SHELL_DETECT_WP_SIGNAL_SEVERITY="$SEVERITY_HIGH"
-        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="meerdere generieke obfuscatiepatronen: $count"
+        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="Meerdere generieke obfuscatiepatronen aangetroffen: $count."
         return 0
     fi
     if [ "$count" -eq 1 ]; then
         WP2SHELL_DETECT_WP_SIGNAL_SEVERITY="$SEVERITY_MEDIUM"
-        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="een enkel generiek obfuscatiepatroon"
+        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="Een enkel generiek obfuscatiepatroon aangetroffen."
         return 0
     fi
     return 0
@@ -1040,7 +1040,7 @@ detect_wp_administrator_accounts() {
             WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW=$((WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW + 1))
             detail="Beheerder $login met e-mailadres $email is aangemaakt op $registered, dat is op of na het begin van het blootstellingsvenster ($window_datetime). Een nieuw beheerdersaccount binnen dat venster is de bekendste vorm van persistentie bij deze aanval."
             if [ -n "$rank_note" ]; then
-                detail="$detail Het account past bovendien bij het door leveranciers gerapporteerde naampatroon: $rank_note."
+                detail="$detail Het account past bovendien bij het door leveranciers gerapporteerde naampatroon ($rank_note)."
             else
                 detail="$detail Het account past niet bij het gerapporteerde naampatroon, maar dat zegt weinig: een aanvaller past namen triviaal aan."
             fi
@@ -1062,7 +1062,7 @@ detect_wp_administrator_accounts() {
             detail="$detail De aanmaakdatum is leeg of onleesbaar, wat op een account wijst dat buiten WordPress om in de database is gezet."
         fi
         if [ -n "$rank_note" ]; then
-            detail="$detail Het account past bij het door leveranciers gerapporteerde naampatroon: $rank_note."
+            detail="$detail Het account past bij het door leveranciers gerapporteerde naampatroon ($rank_note)."
         fi
         detail="$detail Dit blijft heuristisch: een legitieme beheerder van de klant komt hier ook in terecht zolang die niet op de allowlist staat."
         record_finding \
@@ -1506,7 +1506,7 @@ detect_wp_check_bridge_posts() {
                 *'<?php'*|*'<?='*)
                     if [ "$WP2SHELL_DETECT_WP_SIGNAL_CONFIDENCE" != "$CONFIDENCE_HIGH" ]; then
                         WP2SHELL_DETECT_WP_SIGNAL_SEVERITY="$SEVERITY_HIGH"
-                        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="PHP-code in een rij die alleen instellingen of externe HTML hoort te bevatten"
+                        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="PHP-code in een rij die alleen instellingen of externe HTML hoort te bevatten."
                     fi
                     ;;
             esac

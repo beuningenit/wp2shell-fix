@@ -552,6 +552,24 @@ detect_logs_reset_state() {
     return 0
 }
 
+detect_logs_readable_text() {
+    local raw=$1 converted='' status=0
+    if [ -z "$raw" ]; then
+        printf ''
+        return 0
+    fi
+    if [ "${WP2SHELL_HAS_ICONV:-0}" = "1" ]; then
+        converted=$(printf '%s.' "$raw" | iconv -f UTF-8 -t UTF-8 -c 2>/dev/null) || status=$?
+        if [ -n "$converted" ]; then
+            printf '%s' "${converted%.}"
+            return 0
+        fi
+        log_debug "iconv leverde geen bruikbare tekst op, exitcode $status, terugval op de ingebouwde filter"
+    fi
+    printf '%s' "${raw//[![:print:][:space:]]/}"
+    return 0
+}
+
 detect_logs_group_add() {
     local key=$1 timestamp=$2 evidence=$3 source_file=$4 status=$5 sample=$6
     local current limit
@@ -562,7 +580,7 @@ detect_logs_group_add() {
     esac
     if [ "$current" -eq 0 ]; then
         WP2SHELL_LOG_GROUP_KEYS+=("$key")
-        WP2SHELL_LOG_GROUP_EVIDENCE["$key"]=${evidence:0:limit}
+        WP2SHELL_LOG_GROUP_EVIDENCE["$key"]=$(detect_logs_readable_text "${evidence:0:limit}")
         WP2SHELL_LOG_GROUP_SOURCE["$key"]=$source_file
         WP2SHELL_LOG_GROUP_STATUSES["$key"]=""
         WP2SHELL_LOG_GROUP_SAMPLE["$key"]=""
@@ -581,7 +599,7 @@ detect_logs_group_add() {
         esac
     fi
     if [ -n "$sample" ] && [ -z "${WP2SHELL_LOG_GROUP_SAMPLE["$key"]}" ]; then
-        WP2SHELL_LOG_GROUP_SAMPLE["$key"]=${sample:0:limit}
+        WP2SHELL_LOG_GROUP_SAMPLE["$key"]=$(detect_logs_readable_text "${sample:0:limit}")
     fi
     return 0
 }
@@ -658,6 +676,7 @@ detect_logs_classify_line() {
     fi
     if [[ $working =~ $WP2SHELL_LOG_TIMESTAMP_REGEX ]]; then
         timestamp=${BASH_REMATCH[1]}
+        timestamp=${timestamp//[^0-9A-Za-z:+ ,.\/-]/}
         timestamp=${timestamp:0:48}
     fi
     local index total category tier literal
@@ -778,14 +797,15 @@ detect_logs_scan_file() {
     fi
     if [ "$grep_status" -gt 1 ]; then
         WP2SHELL_LOG_SOURCES_FAILED+=("$path: grep gaf exitcode $grep_status")
+    else
+        WP2SHELL_LOG_SOURCES_READ+=("$path")
+        WP2SHELL_LOG_FILES_SCANNED=$((WP2SHELL_LOG_FILES_SCANNED + 1))
     fi
     if [ "$matched_lines" -ge "$max_matches" ]; then
         WP2SHELL_LOG_SOURCES_TRUNCATED+=("$path: gestopt na $max_matches treffers")
     elif [ "$reader_status" -ne 0 ]; then
         WP2SHELL_LOG_SOURCES_TRUNCATED+=("$path: stroom onvolledig gelezen, exitcode $reader_status, afgekapt op $max_lines regels of leesfout")
     fi
-    WP2SHELL_LOG_SOURCES_READ+=("$path")
-    WP2SHELL_LOG_FILES_SCANNED=$((WP2SHELL_LOG_FILES_SCANNED + 1))
     local line
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -n "$line" ]; then

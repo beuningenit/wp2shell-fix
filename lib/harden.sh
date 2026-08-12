@@ -436,6 +436,105 @@ update_core_for_site() {
     return 0
 }
 
+modsecurity_rules_payload() {
+    local mode=$1
+    local action="pass,log"
+    if [ "$mode" = "block" ]; then
+        action="deny,status:403,log"
+    fi
+    printf 'SecRule REQUEST_HEADERS:User-Agent "@rx (?i)(?:wp2shell|rezwp2shell|cve-2026-63030/)" \\\n'
+    printf '    "id:1200001,phase:1,%s,\\\n' "$action"
+    printf 'msg:%swp2shell IoC user-agent%s,tag:%swp2shell%s"\n\n' "'" "'" "'" "'"
+    printf 'SecRule ARGS:/^author([._ ]?exclude|__not_in)/ "!@rx ^[0-9]+(?:,[0-9]+)*$" \\\n'
+    printf '    "id:1200002,phase:2,%s,\\\n' "$action"
+    printf 'msg:%swp2shell niet-numerieke author_exclude of author__not_in%s,tag:%swp2shell%s"\n\n' "'" "'" "'" "'"
+    printf 'SecRule REQUEST_URI "@rx (?i)admin-ajax\\.php\\?.*template=\\.\\./" \\\n'
+    printf '    "id:1200003,phase:1,%s,\\\n' "$action"
+    printf 'msg:%swp2shell LFI-poging via de admin-ajax template-parameter%s,tag:%swp2shell%s"\n\n' "'" "'" "'" "'"
+    printf 'SecRule REQUEST_URI "@rx (?i)(?:/wp-json/batch/v1|rest_route=/batch/v1)" \\\n'
+    printf '    "id:1200004,phase:1,pass,log,\\\n'
+    printf 'msg:%swp2shell batch-endpoint aangeroepen%s,tag:%swp2shell%s,tag:%stelemetrie%s"\n' "'" "'" "'" "'" "'" "'"
+    return 0
+}
+
+modsecurity_custom_include_candidates() {
+    printf '%s\n' \
+        /usr/local/lsws/conf/modsec \
+        /usr/local/lsws/conf/modsec/custom \
+        /etc/modsecurity.d \
+        /usr/local/directadmin/data/templates/custom \
+        /etc/httpd/conf/extra/modsecurity.d
+    return 0
+}
+
+modsecurity_detect_include_directory() {
+    local candidate
+    while IFS= read -r candidate; do
+        if [ -d "$candidate" ] && [ -w "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done < <(modsecurity_custom_include_candidates)
+    return 1
+}
+
+modsecurity_is_available() {
+    if [ -d /usr/local/lsws/conf ] && "${WP2SHELL_GREP:-grep}" -rqs 'modsecurity' /usr/local/lsws/conf 2>/dev/null; then
+        return 0
+    fi
+    if [ -d /etc/modsecurity.d ]; then
+        return 0
+    fi
+    return 1
+}
+
+stage_modsecurity_rules() {
+    local apply=$1
+    if [ "${WP2SHELL_MODSECURITY_ENABLED:-1}" != "1" ]; then
+        return 0
+    fi
+    if ! modsecurity_is_available; then
+        log_debug "ModSecurity is niet aangetroffen, de regels worden niet klaargezet"
+        return 0
+    fi
+    local staging_dir="${WP2SHELL_STATE_DIR:-/var/lib/wp2shell}/modsecurity"
+    local staged_file="$staging_dir/wp2shell-rules.conf"
+    if [ "$apply" != "1" ]; then
+        record_finding \
+            "severity=$SEVERITY_LOW" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=modsecurity-proposed" \
+            "title=Er kunnen ModSecurity-regels klaargezet worden" \
+            "detail=ModSecurity is aanwezig op deze server. De toolkit kan een regelbestand klaarzetten met detectie op de wp2shell user agents, op niet-numerieke author_exclude-waarden en op de LFI-poging via admin-ajax." \
+            "remediation=Draai harden met --apply om het bestand klaar te zetten." \
+            "action=proposed"
+        return 0
+    fi
+    if ! mkdir -p -- "$staging_dir"; then
+        log_error "Kan de ModSecurity-stagingmap niet aanmaken"
+        return 1
+    fi
+    modsecurity_rules_payload log > "$staged_file"
+    modsecurity_rules_payload block > "$staging_dir/wp2shell-rules-blokkerend.conf"
+    chmod 0640 -- "$staged_file" "$staging_dir/wp2shell-rules-blokkerend.conf" 2>/dev/null || true
+    audit_write "harden modsecurity staged=$staged_file"
+    local include_dir remediation
+    if include_dir=$(modsecurity_detect_include_directory); then
+        remediation="Kopieer $staged_file naar $include_dir, herstart met lswsctrl restart, en controleer minstens een volledige verkeerscyclus in het ModSecurity-auditlog. Zet daarna pas de blokkerende variant in."
+    else
+        remediation="Er is geen schrijfbare custom-rules map gevonden. Stel op deze server zelf vast welke includeketen actief is en plaats $staged_file daarin."
+    fi
+    record_finding \
+        "severity=$SEVERITY_MEDIUM" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=modsecurity-staged" \
+        "title=ModSecurity-regels staan klaar maar zijn bewust niet geactiveerd" \
+        "detail=Het regelbestand is weggeschreven naar $staged_file in loggende modus. ModSecurity werkt op deze server serverbreed en niet per vhost, dus een regel die te ruim matcht raakt alle klanten tegelijk. Daarom activeert dit script niets zelf. Er staat ook een blokkerende variant klaar voor na de observatieperiode." \
+        "remediation=$remediation" \
+        "action=staged"
+    return 0
+}
+
 softaculous_cli_path() {
     local candidate=/usr/local/directadmin/plugins/softaculous/cli.php
     if [ -r "$candidate" ]; then

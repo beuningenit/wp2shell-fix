@@ -451,7 +451,32 @@ command_scan() {
     return 0
 }
 
-iterate_sites() {
+record_site_failure() {
+    local site_path=$1 rc=$2
+    log_error "Verwerking van $site_path is mislukt met exitcode $rc, de overige sites gaan door"
+    record_finding \
+        "site=$site_path" \
+        "severity=$SEVERITY_MEDIUM" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=site-processing-failed" \
+        "title=Verwerking van deze site is mislukt" \
+        "detail=De verwerking eindigde met exitcode $rc. Andere sites zijn wel verwerkt. Deze site is niet volledig behandeld en mag niet als schoon gelden." \
+        "remediation=Bekijk het runlogboek voor de oorzaak en behandel deze site opnieuw."
+    return 0
+}
+
+merge_worker_findings() {
+    local worker_dir=$1
+    local worker_file
+    for worker_file in "$worker_dir"/*.ndjson; do
+        if [ -f "$worker_file" ] && [ -s "$worker_file" ]; then
+            cat -- "$worker_file" >> "$WP2SHELL_FINDINGS_FILE"
+        fi
+    done
+    return 0
+}
+
+iterate_sites_sequential() {
     local handler=$1
     local total=0 failed=0 line site_path owner_user target_version rc
     while IFS= read -r line || [ -n "$line" ]; do
@@ -470,19 +495,77 @@ iterate_sites() {
         rc=$?
         if [ "$rc" -ne 0 ]; then
             failed=$((failed + 1))
-            log_error "Verwerking van $site_path is mislukt met exitcode $rc, de overige sites gaan door"
-            record_finding \
-                "site=$site_path" \
-                "severity=$SEVERITY_MEDIUM" \
-                "confidence=$CONFIDENCE_HIGH" \
-                "category=site-processing-failed" \
-                "title=Verwerking van deze site is mislukt" \
-                "detail=De verwerking eindigde met exitcode $rc. Andere sites zijn wel verwerkt. Deze site is niet volledig behandeld en mag niet als schoon gelden." \
-                "remediation=Bekijk het runlogboek voor de oorzaak en behandel deze site opnieuw."
+            record_site_failure "$site_path" "$rc"
         fi
     done < "$WP2SHELL_SITES_FILE"
     log_info "$total sites verwerkt, $failed mislukt"
     return 0
+}
+
+iterate_sites_parallel() {
+    local handler=$1 jobs=$2
+    local worker_dir total=0 index=0 line site_path owner_user target_version
+    worker_dir=$(make_temp_dir wp2shell-workers)
+    register_temp_cleanup "$worker_dir"
+    local -a pending_paths=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        owner_user=$(site_record_field "$line" effective_user) || owner_user=''
+        target_version=$(site_record_field "$line" target_version) || target_version=''
+        if [ -z "$site_path" ] || [ -z "$owner_user" ]; then
+            log_warn "Siterecord zonder pad of eigenaar wordt overgeslagen"
+            continue
+        fi
+        total=$((total + 1))
+        index=$((index + 1))
+        pending_paths+=("$site_path")
+        (
+            WP2SHELL_FINDINGS_FILE="$worker_dir/$index.ndjson"
+            : > "$WP2SHELL_FINDINGS_FILE"
+            "$handler" "$site_path" "$owner_user" "$target_version"
+            printf '%s' "$?" > "$worker_dir/$index.status"
+        ) &
+        while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do
+            wait -n 2>/dev/null || true
+        done
+    done < "$WP2SHELL_SITES_FILE"
+    wait
+    merge_worker_findings "$worker_dir"
+    local failed=0 position=0 status_file status
+    for position in "${!pending_paths[@]}"; do
+        status_file="$worker_dir/$((position + 1)).status"
+        status=1
+        if [ -f "$status_file" ]; then
+            status=$(cat -- "$status_file" 2>/dev/null) || status=1
+        fi
+        case $status in
+            ''|*[!0-9]*) status=1 ;;
+        esac
+        if [ "$status" -ne 0 ]; then
+            failed=$((failed + 1))
+            record_site_failure "${pending_paths[$position]}" "$status"
+        fi
+    done
+    log_info "$total sites verwerkt, $failed mislukt"
+    return 0
+}
+
+iterate_sites() {
+    local handler=$1
+    local jobs=${WP2SHELL_PARALLEL_JOBS:-1}
+    case $jobs in
+        ''|*[!0-9]*) jobs=1 ;;
+    esac
+    if [ "$jobs" -le 1 ]; then
+        iterate_sites_sequential "$handler"
+        return $?
+    fi
+    log_info "Parallelle verwerking met maximaal $jobs sites tegelijk"
+    iterate_sites_parallel "$handler" "$jobs"
+    return $?
 }
 
 handle_clean_site() {
@@ -539,6 +622,7 @@ command_harden() {
     classify_discovered_sites "$WP2SHELL_SITES_FILE"
     iterate_sites handle_harden_site
     enable_softaculous_auto_upgrade "$OPT_APPLY" || true
+    stage_modsecurity_rules "$OPT_APPLY" || true
     if restart_openlitespeed_if_needed "$OPT_APPLY"; then
         if [ "$OPT_APPLY" = "1" ] && [ "$WP2SHELL_RESTART_REQUIRED" = "1" ]; then
             verify_hardening_after_restart
