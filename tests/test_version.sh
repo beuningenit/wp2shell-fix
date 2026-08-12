@@ -115,6 +115,26 @@ expect_equal "evaluate wp2shell status" "$WP2SHELL_STATUS_RCE_VULNERABLE" "$WP2S
 expect_equal "evaluate security status" "$WP2SHELL_SECURITY_OUTDATED" "$WP2SHELL_SITE_SECURITY_STATUS"
 expect_equal "evaluate doelversie" "6.9.6" "$WP2SHELL_SITE_TARGET_VERSION"
 
+via_loader=$(
+    set -euo pipefail
+    . "$REPO_ROOT/lib/common.sh"
+    . "$REPO_ROOT/lib/version.sh"
+    load_configuration "$REPO_ROOT/config/wp2shell.conf" 2>/dev/null
+    classify_wp2shell_status "6.9.4"
+)
+expect_equal "versietabellen overleven load_configuration" \
+    "$WP2SHELL_STATUS_RCE_VULNERABLE" "$via_loader"
+
+via_loader_patched=$(
+    set -euo pipefail
+    . "$REPO_ROOT/lib/common.sh"
+    . "$REPO_ROOT/lib/version.sh"
+    load_configuration "$REPO_ROOT/config/wp2shell.conf" 2>/dev/null
+    classify_current_security_status "6.9.5"
+)
+expect_equal "securitytabel overleeft load_configuration" \
+    "$WP2SHELL_SECURITY_OUTDATED" "$via_loader_patched"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
