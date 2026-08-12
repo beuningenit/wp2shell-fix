@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+set -uo pipefail
 
 WP2SHELL_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 WP2SHELL_TOOLKIT_VERSION="1.0.0"
@@ -7,6 +7,13 @@ WP2SHELL_TOOLKIT_VERSION="1.0.0"
 . "$WP2SHELL_ROOT/lib/common.sh"
 . "$WP2SHELL_ROOT/lib/version.sh"
 . "$WP2SHELL_ROOT/lib/discovery.sh"
+. "$WP2SHELL_ROOT/lib/detect_files.sh"
+. "$WP2SHELL_ROOT/lib/detect_wp.sh"
+. "$WP2SHELL_ROOT/lib/detect_logs.sh"
+. "$WP2SHELL_ROOT/lib/backup.sh"
+. "$WP2SHELL_ROOT/lib/quarantine.sh"
+. "$WP2SHELL_ROOT/lib/clean.sh"
+. "$WP2SHELL_ROOT/lib/harden.sh"
 . "$WP2SHELL_ROOT/lib/report.sh"
 
 OPT_SUBCOMMAND=""
@@ -224,12 +231,22 @@ setup_run_environment() {
 }
 
 check_dependencies() {
-    if ! require_command php find grep sha1sum curl tar date stat; then
+    if ! require_command php sha1sum curl date stat base64; then
         die "$EXIT_INTERNAL" "Niet alle vereiste commando's zijn aanwezig"
     fi
     detect_optional_commands
+    if ! resolve_external_tools; then
+        die "$EXIT_INTERNAL" "Kan de vereiste externe tools niet vaststellen"
+    fi
     if [ "${WP2SHELL_HAS_JQ:-0}" != "1" ]; then
         log_debug "jq is niet aanwezig, er wordt teruggevallen op de ingebouwde JSON-verwerking"
+    fi
+    if ! ensure_wp_cli; then
+        log_warn "WP-CLI is niet beschikbaar, de controles op database en core-integriteit worden overgeslagen"
+        WP2SHELL_WP_CLI_MISSING=1
+    else
+        WP2SHELL_WP_CLI_MISSING=0
+        log_debug "WP-CLI in gebruik: ${WP2SHELL_WP_CLI_RESOLVED:-}"
     fi
     return 0
 }
@@ -368,23 +385,250 @@ report_version_findings() {
     return 0
 }
 
+run_detection_over_sites() {
+    local line site_path owner_user domain rc
+    if ! require_detection_modules; then
+        return 1
+    fi
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        owner_user=$(site_record_field "$line" effective_user) || owner_user=''
+        domain=$(site_record_field "$line" domain) || domain=''
+        if [ -z "$site_path" ]; then
+            continue
+        fi
+        ( detect_all_for_site "$site_path" "$owner_user" "$domain" )
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_warn "Detectie op $site_path eindigde met exitcode $rc"
+        fi
+    done < "$WP2SHELL_SITES_FILE"
+    if declare -F detect_logs_server_wide >/dev/null 2>&1; then
+        detect_logs_server_wide || true
+    fi
+    return 0
+}
+
+require_detection_modules() {
+    local missing=() name
+    for name in detect_files_for_site detect_wp_for_site detect_logs_for_site; do
+        if ! declare -F "$name" >/dev/null 2>&1; then
+            missing+=("$name")
+        fi
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        log_error "Detectiemodules ontbreken: ${missing[*]}"
+        record_finding \
+            "severity=$SEVERITY_CRITICAL" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=detection-unavailable" \
+            "title=Er is helemaal geen detectie uitgevoerd" \
+            "detail=De volgende detectiefuncties zijn niet geladen: ${missing[*]}. Er is dus alleen op versienummer gekeken. Dit rapport zegt niets over besmetting en mag onder geen beding als schoon gelezen worden." \
+            "remediation=Controleer of de installatie compleet is en draai de scan opnieuw."
+        return 1
+    fi
+    return 0
+}
+
+detect_all_for_site() {
+    local site_path=$1 owner_user=$2 domain=$3
+    detect_files_for_site "$site_path" "$owner_user" || true
+    detect_wp_for_site "$site_path" "$owner_user" || true
+    detect_logs_for_site "$site_path" "$domain" || true
+    return 0
+}
+
 command_scan() {
     log_info "Start read-only scan"
     if ! discover_sites "$WP2SHELL_SITES_FILE" "$OPT_SITE" "$OPT_USER"; then
         die "$EXIT_INTERNAL" "Discovery is mislukt"
     fi
     classify_discovered_sites "$WP2SHELL_SITES_FILE"
+    run_detection_over_sites
+    return 0
+}
+
+record_site_failure() {
+    local site_path=$1 rc=$2
+    log_error "Verwerking van $site_path is mislukt met exitcode $rc, de overige sites gaan door"
+    record_finding \
+        "site=$site_path" \
+        "severity=$SEVERITY_MEDIUM" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=site-processing-failed" \
+        "title=Verwerking van deze site is mislukt" \
+        "detail=De verwerking eindigde met exitcode $rc. Andere sites zijn wel verwerkt. Deze site is niet volledig behandeld en mag niet als schoon gelden." \
+        "remediation=Bekijk het runlogboek voor de oorzaak en behandel deze site opnieuw."
+    return 0
+}
+
+merge_worker_findings() {
+    local worker_dir=$1
+    local worker_file
+    for worker_file in "$worker_dir"/*.ndjson; do
+        if [ -f "$worker_file" ] && [ -s "$worker_file" ]; then
+            cat -- "$worker_file" >> "$WP2SHELL_FINDINGS_FILE"
+        fi
+    done
+    return 0
+}
+
+iterate_sites_sequential() {
+    local handler=$1
+    local total=0 failed=0 line site_path owner_user target_version rc
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        owner_user=$(site_record_field "$line" effective_user) || owner_user=''
+        target_version=$(site_record_field "$line" target_version) || target_version=''
+        if [ -z "$site_path" ] || [ -z "$owner_user" ]; then
+            log_warn "Siterecord zonder pad of eigenaar wordt overgeslagen"
+            continue
+        fi
+        total=$((total + 1))
+        ( "$handler" "$site_path" "$owner_user" "$target_version" )
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            failed=$((failed + 1))
+            record_site_failure "$site_path" "$rc"
+        fi
+    done < "$WP2SHELL_SITES_FILE"
+    log_info "$total sites verwerkt, $failed mislukt"
+    return 0
+}
+
+iterate_sites_parallel() {
+    local handler=$1 jobs=$2
+    local worker_dir total=0 index=0 line site_path owner_user target_version
+    worker_dir=$(make_temp_dir wp2shell-workers)
+    register_temp_cleanup "$worker_dir"
+    local -a pending_paths=()
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        owner_user=$(site_record_field "$line" effective_user) || owner_user=''
+        target_version=$(site_record_field "$line" target_version) || target_version=''
+        if [ -z "$site_path" ] || [ -z "$owner_user" ]; then
+            log_warn "Siterecord zonder pad of eigenaar wordt overgeslagen"
+            continue
+        fi
+        total=$((total + 1))
+        index=$((index + 1))
+        pending_paths+=("$site_path")
+        (
+            WP2SHELL_FINDINGS_FILE="$worker_dir/$index.ndjson"
+            : > "$WP2SHELL_FINDINGS_FILE"
+            "$handler" "$site_path" "$owner_user" "$target_version"
+            printf '%s' "$?" > "$worker_dir/$index.status"
+        ) &
+        while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do
+            wait -n 2>/dev/null || true
+        done
+    done < "$WP2SHELL_SITES_FILE"
+    wait
+    merge_worker_findings "$worker_dir"
+    local failed=0 position=0 status_file status
+    for position in "${!pending_paths[@]}"; do
+        status_file="$worker_dir/$((position + 1)).status"
+        status=1
+        if [ -f "$status_file" ]; then
+            status=$(cat -- "$status_file" 2>/dev/null) || status=1
+        fi
+        case $status in
+            ''|*[!0-9]*) status=1 ;;
+        esac
+        if [ "$status" -ne 0 ]; then
+            failed=$((failed + 1))
+            record_site_failure "${pending_paths[$position]}" "$status"
+        fi
+    done
+    log_info "$total sites verwerkt, $failed mislukt"
+    return 0
+}
+
+iterate_sites() {
+    local handler=$1
+    local jobs=${WP2SHELL_PARALLEL_JOBS:-1}
+    case $jobs in
+        ''|*[!0-9]*) jobs=1 ;;
+    esac
+    if [ "$jobs" -le 1 ]; then
+        iterate_sites_sequential "$handler"
+        return $?
+    fi
+    log_info "Parallelle verwerking met maximaal $jobs sites tegelijk"
+    iterate_sites_parallel "$handler" "$jobs"
+    return $?
+}
+
+handle_clean_site() {
+    local site_path=$1 owner_user=$2 target_version=$3
+    clean_site "$site_path" "$owner_user" "$OPT_APPLY" "$OPT_REMOVE_ADMINS" "$OPT_MAINTENANCE" "$target_version"
+}
+
+handle_harden_site() {
+    local site_path=$1 owner_user=$2 target_version=$3
+    local exposed=0
+    if [ -n "$target_version" ]; then
+        exposed=1
+    fi
+    update_core_for_site "$site_path" "$owner_user" "$OPT_APPLY" "$target_version" || true
+    harden_htaccess_for_site "$site_path" "$OPT_APPLY" || true
+    harden_wp_configuration "$site_path" "$owner_user" "$OPT_APPLY" || true
+    rotate_salts_for_site "$site_path" "$owner_user" "$OPT_APPLY" "$exposed" || true
+    normalize_permissions_for_site "$site_path" "$owner_user" "$OPT_APPLY" || true
+    remove_stopgap_muplugin "$site_path" "$OPT_APPLY" 1 || true
+    return 0
+}
+
+verify_hardening_after_restart() {
+    local line site_path url
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        url=$(site_record_field "$line" url) || url=''
+        if [ -n "$site_path" ] && [ -n "$url" ]; then
+            verify_hardening_enforced "$site_path" "$url" || true
+        fi
+    done < "$WP2SHELL_SITES_FILE"
     return 0
 }
 
 command_clean() {
-    log_error "Het subcommando clean is nog niet beschikbaar in deze versie"
-    return "$EXIT_INTERNAL"
+    log_info "Start opschoning"
+    if ! discover_sites "$WP2SHELL_SITES_FILE" "$OPT_SITE" "$OPT_USER"; then
+        die "$EXIT_INTERNAL" "Discovery is mislukt"
+    fi
+    classify_discovered_sites "$WP2SHELL_SITES_FILE"
+    run_detection_over_sites
+    iterate_sites handle_clean_site
+    return 0
 }
 
 command_harden() {
-    log_error "Het subcommando harden is nog niet beschikbaar in deze versie"
-    return "$EXIT_INTERNAL"
+    log_info "Start hardening"
+    if ! discover_sites "$WP2SHELL_SITES_FILE" "$OPT_SITE" "$OPT_USER"; then
+        die "$EXIT_INTERNAL" "Discovery is mislukt"
+    fi
+    classify_discovered_sites "$WP2SHELL_SITES_FILE"
+    iterate_sites handle_harden_site
+    enable_softaculous_auto_upgrade "$OPT_APPLY" || true
+    stage_modsecurity_rules "$OPT_APPLY" || true
+    if restart_openlitespeed_if_needed "$OPT_APPLY"; then
+        if [ "$OPT_APPLY" = "1" ] && [ "$WP2SHELL_RESTART_REQUIRED" = "1" ]; then
+            verify_hardening_after_restart
+        fi
+    fi
+    return 0
 }
 
 command_report() {

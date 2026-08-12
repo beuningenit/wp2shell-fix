@@ -34,6 +34,11 @@ commandoregel in `tools/lint.sh`, met deze motivering:
   ongebruikt maar worden door de andere modules geconsumeerd.
 - `SC2016`: strings met `$argv[1]` of `$wp_version` zijn PHP-broncode of een grep-patroon. Die mogen
   juist niet door Bash geexpandeerd worden.
+- `SC2029`: `deploy.sh` expandeert bewust aan de clientkant, want het doelpad is een lokale
+  variabele die voor verzending ingevuld moet worden. De invoer wordt eerst gevalideerd op
+  shell-metatekens.
+- `SC2329`: handlerfuncties worden indirect aangeroepen via een variabele, zodat elk subcommando
+  dezelfde per-site isolatie gebruikt.
 - `SC2254`: allowlist-entries zijn bewust globs, geen letterlijke strings. `*@beuningenit.nl` en
   `/home/*/domains/*/public_html/maatwerk/*` moeten als patroon matchen.
 
@@ -115,8 +120,24 @@ enig signaal.
 
 ## Bash-veiligheidsregels
 
-- `set -euo pipefail` in elk uitvoerbaar script, met bewuste per-site foutisolatie eromheen zodat
-  principe 6 gehaald wordt.
+- `set -uo pipefail` in het entrypoint, bewust **zonder** `-e`. Met `-e` kan een falende site de hele
+  run afbreken en kan de exitcode van de subshell niet opgevangen worden, en dan sneuvelt principe 6.
+- Per-site isolatie heeft precies een correcte vorm:
+
+  ```
+  ( verwerk_site "$site" )
+  rc=$?
+  ```
+
+  De subshell moet een **losstaande opdracht** zijn en `rc` moet op de volgende regel opgevangen
+  worden. Schrijf nooit `( ... ) || afhandelaar` en ook niet `if ! ( ... )`. Door de subshell in een
+  conditie te plaatsen zet Bash `set -e` uit voor de hele looptijd ervan, ook wanneer de subshell zelf
+  `set -e` opnieuw aanzet. Dat is geverifieerd gedrag en het faalt stil.
+- Vertrouw voor kritieke voorwaarden niet op `set -e` maar controleer expliciet. De regel dat er nooit
+  opgeschoond wordt zonder geslaagde backup is daarom een expliciete `if ! ensure_backup...; then
+  return 1; fi` en geen impliciet neveneffect.
+- `grep -q` geeft exitcode 1 als er niets matcht, en bij een malwarescanner is dat het normale geval.
+  Vang elke detectie-grep af.
 - Padverwerking altijd via `find -print0` met `while IFS= read -r -d ''`. Bestandsnamen in
   klantmappen zijn door aanvallers te kiezen en bevatten spaties, newlines en aanhalingstekens.
 - Symlinks nooit blind volgen. Aanvallers planten symlinks om buiten de docroot te komen. Gebruik
@@ -160,13 +181,34 @@ Exitcodes weerspiegelen de ernstigste bevinding, zodat cron en monitoring erop k
 
 ### OpenLiteSpeed
 
+- **`.htaccess` wordt eenmalig gelezen en daarna gecachet voor de levensduur van het proces.**
+  OpenLiteSpeed parseert de docroot-`.htaccess` bij het laden van de vhostconfig en elke
+  submap-`.htaccess` bij de eerste toegang tot die map. Er is nergens een mtime-hercontrole.
+  Gevolg: elke hardeningregel die via SSH wordt weggeschreven doet niets tot er een
+  `lswsctrl restart` is geweest. Schrijf daarom eerst alle wijzigingen, dan een enkele graceful
+  restart, en verifieer pas daarna. Wie schrijft en meteen met curl verifieert, ziet correcte
+  regels als mislukt.
 - `.htaccess` wordt alleen gelezen als rewrite aan staat voor de vhost. Detecteer dat, neem het niet aan.
 - `<Files>`, `<FilesMatch>`, `php_value` en `Require`/`Deny from` werken niet betrouwbaar. Gebruik
   `RewriteRule` en `RewriteCond`.
 - Bewerk de door DirectAdmin beheerde vhostconfig niet met de hand. DirectAdmin overschrijft die bij
   een rewrite. Gebruik ModSecurity of DirectAdmin custom config-includes.
-- Stel het actieve ModSecurity-regelpad op de server zelf vast. Neem geen pad aan.
+- **Er is geen canoniek ModSecurity-regelpad** op DirectAdmin met OpenLiteSpeed. Er zijn minstens
+  vier varianten, afhankelijk van hoe de server gebouwd is, en `include` accepteert wildcards op elke
+  positie. Parseer de werkelijk geladen configketen en bewijs bereikbaarheid met een canary-regel
+  voordat je rapporteert dat regels actief zijn. Anders meld je containment die er niet is.
 - Object cache is geen mitigatie. Behandel het nooit als fix.
+
+### Externe tools
+
+Resolveer `find`, `grep` en `tar` naar absolute paden en controleer dat het de GNU-varianten zijn.
+De veiligheidsgaranties rond symlinks hangen daarvan af, en een shellfunctie of een niet-GNU
+lookalike verandert die semantiek stil. `grep -R` met hoofdletter volgt symlinks naar buiten de boom
+en leest daarmee de data van een andere klant. Gebruik `grep -r` of stuur grep aan vanuit find.
+
+`grep -q` geeft exitcode 1 bij geen match. Voor een malwarescanner is geen match het normale geval,
+dus elke detectie-grep moet afgevangen worden met `if grep -q ...; then` of `|| true`. Zonder dat
+stopt de scan op de eerste schone site.
 
 ### DirectAdmin
 

@@ -1,0 +1,5 @@
+34.81.132.62:low:Google Cloud, gedeelde cloudinfrastructuur, zwak signaal
+15.157.135.170:low:Amazon AWS, gedeelde cloudinfrastructuur, zwak signaal
+172.235.128.52:low:Linode, door Wiz geclassificeerd als scaninfrastructuur en niet als exploitatie
+79.177.131.206:medium:Bezeq residentieel Israel, geen cloudrange
+94.100.52.128:medium:AL-TELCOMMUNICATIONS Albanie, geen cloudrange

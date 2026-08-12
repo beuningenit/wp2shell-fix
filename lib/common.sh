@@ -165,6 +165,56 @@ detect_optional_commands() {
     return 0
 }
 
+resolve_tool_path() {
+    local name=$1
+    shift
+    local candidate
+    for candidate in "$@"; do
+        if [ -x "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    candidate=$(command -v "$name" 2>/dev/null) || candidate=''
+    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+    return 1
+}
+
+tool_is_gnu() {
+    local binary=$1 marker=$2
+    "$binary" --version 2>/dev/null | head -1 | grep -q "$marker"
+}
+
+resolve_external_tools() {
+    umask 077
+    PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    export PATH
+    WP2SHELL_FIND=$(resolve_tool_path find /usr/bin/find /bin/find) || return 1
+    WP2SHELL_GREP=$(resolve_tool_path grep /usr/bin/grep /bin/grep) || return 1
+    WP2SHELL_TAR=$(resolve_tool_path tar /usr/bin/tar /bin/tar) || return 1
+    WP2SHELL_SORT=$(resolve_tool_path sort /usr/bin/sort /bin/sort) || return 1
+    local strict=${WP2SHELL_REQUIRE_GNU_TOOLS:-1}
+    local failures=0
+    if ! tool_is_gnu "$WP2SHELL_FIND" 'GNU findutils'; then
+        log_warn "$WP2SHELL_FIND is geen GNU findutils, de symlink-semantiek kan afwijken"
+        failures=$((failures + 1))
+    fi
+    if ! tool_is_gnu "$WP2SHELL_GREP" 'GNU grep'; then
+        log_warn "$WP2SHELL_GREP is geen GNU grep, het zoekgedrag kan afwijken"
+        failures=$((failures + 1))
+    fi
+    if [ "$failures" -gt 0 ] && [ "$strict" = "1" ]; then
+        log_error "Deze toolkit vereist GNU find en GNU grep, want de veiligheidsgaranties rond symlinks hangen daarvan af"
+        log_error "Zet WP2SHELL_REQUIRE_GNU_TOOLS=0 in de configuratie om dit bewust te negeren"
+        return 1
+    fi
+    log_debug "Tools: find=$WP2SHELL_FIND grep=$WP2SHELL_GREP tar=$WP2SHELL_TAR"
+    return 0
+}
+
 sanitize_text() {
     local cleaned
     cleaned=$(printf '%s.' "$1" | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177')
@@ -191,6 +241,16 @@ json_escape_string() {
 
 json_string() {
     printf '"%s"' "$(json_escape_string "$1")"
+}
+
+path_to_base64() {
+    printf '%s' "$1" | base64 -w0 2>/dev/null || printf '%s' "$1" | base64 | tr -d '\n'
+}
+
+path_is_json_lossy() {
+    local original=$1 roundtrip
+    roundtrip=$(sanitize_text "$original")
+    [ "$roundtrip" != "$original" ]
 }
 
 json_number_or_null() {
@@ -503,6 +563,10 @@ file_sha1() {
     sha1sum -- "$1" 2>/dev/null | cut -d' ' -f1
 }
 
+file_sha256() {
+    sha256sum -- "$1" 2>/dev/null | cut -d' ' -f1
+}
+
 file_size_bytes() {
     stat -c '%s' -- "$1" 2>/dev/null
 }
@@ -559,6 +623,8 @@ record_finding() {
         printf '"title":%s,' "$(json_string "$title")"
         printf '"detail":%s,' "$(json_string "$detail")"
         printf '"file_path":%s,' "$(json_string "$file_path")"
+        printf '"file_path_b64":%s,' "$(json_string "$(path_to_base64 "$file_path")")"
+        printf '"file_path_lossy":%s,' "$(json_bool "$(path_is_json_lossy "$file_path" && printf '1' || printf '0')")"
         printf '"sha1":%s,' "$(json_string "$sha1")"
         printf '"evidence":%s,' "$(json_string "$evidence")"
         printf '"remediation":%s,' "$(json_string "$remediation")"

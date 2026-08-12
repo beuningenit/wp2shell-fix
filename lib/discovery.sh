@@ -148,24 +148,166 @@ find_wordpress_roots_under() {
         return 0
     fi
     build_find_prune_arguments
-    find -P "$base" "${WP2SHELL_FIND_PRUNE_ARGS[@]}" \
+    "${WP2SHELL_FIND:-find}" -P "$base" -xdev "${WP2SHELL_FIND_PRUNE_ARGS[@]}" \
         -type f -path '*/wp-includes/version.php' -print0 2>/dev/null
+}
+
+collect_wordpress_roots_into() {
+    local destination=$1
+    shift
+    local base status incomplete=0
+    : > "$destination"
+    for base in "$@"; do
+        status=0
+        find_wordpress_roots_under "$base" >> "$destination" || status=$?
+        if [ "$status" -ne 0 ]; then
+            log_warn "Zoeken onder $base gaf exitcode $status, mogelijk zijn niet alle mappen leesbaar"
+            incomplete=1
+        fi
+    done
+    if [ "$incomplete" = "1" ]; then
+        WP2SHELL_DISCOVERY_INCOMPLETE=1
+    fi
+    return 0
+}
+
+directadmin_binary() {
+    local candidate
+    for candidate in /usr/local/directadmin/directadmin /usr/local/bin/da /usr/bin/da; do
+        if [ -x "$candidate" ]; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    if have_command da; then
+        command -v da
+        return 0
+    fi
+    return 1
+}
+
+directadmin_apache_log_dir() {
+    local binary
+    if binary=$(directadmin_binary); then
+        local value
+        value=$("$binary" config-get apachelogdir 2>/dev/null) || value=''
+        value=${value//$'\n'/}
+        if [ -n "$value" ] && [ -d "$value" ]; then
+            printf '%s' "$value"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+directadmin_docroots_from_cli() {
+    local binary
+    if ! binary=$(directadmin_binary); then
+        return 1
+    fi
+    local raw
+    raw=$("$binary" docs-root 2>/dev/null) || return 1
+    if [ -z "$raw" ]; then
+        return 1
+    fi
+    printf '%s' "$raw" | php -r '
+        $raw = stream_get_contents(STDIN);
+        $data = json_decode($raw, true);
+        if (!is_array($data)) { exit(1); }
+        $users = $data["users"] ?? $data;
+        if (!is_array($users)) { exit(1); }
+        foreach ($users as $user => $domains) {
+            if (!is_array($domains)) { continue; }
+            foreach ($domains as $domain => $roots) {
+                if (!is_array($roots)) { continue; }
+                foreach ($roots as $kind => $path) {
+                    if (is_string($path) && $path !== "") { echo $path, "\n"; }
+                }
+            }
+        }
+    ' 2>/dev/null
+}
+
+directadmin_user_home() {
+    local user=$1 home
+    home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6) || home=''
+    if [ -n "$home" ]; then
+        printf '%s' "$home"
+        return 0
+    fi
+    printf '%s/%s' "${WP2SHELL_HOME_BASE:-/home}" "$user"
+    return 0
+}
+
+directadmin_docroots_from_data() {
+    local users_dir=${WP2SHELL_DIRECTADMIN_USERS_DIR:-/usr/local/directadmin/data/users}
+    if [ ! -d "$users_dir" ]; then
+        return 1
+    fi
+    local user home domain subdomain_file label
+    while IFS= read -r user; do
+        if [ -z "$user" ]; then
+            continue
+        fi
+        home=$(directadmin_user_home "$user")
+        while IFS= read -r domain; do
+            if [ -z "$domain" ]; then
+                continue
+            fi
+            printf '%s/domains/%s/public_html\n' "$home" "$domain"
+            printf '%s/domains/%s/private_html\n' "$home" "$domain"
+            for subdomain_file in "$users_dir/$user/domains/$domain".subdomain*; do
+                if [ -r "$subdomain_file" ]; then
+                    while IFS= read -r label; do
+                        label=${label%%$'\r'}
+                        label=${label%%=*}
+                        if [ -n "$label" ]; then
+                            printf '%s/domains/%s/public_html/%s\n' "$home" "$domain" "$label"
+                        fi
+                    done < "$subdomain_file"
+                fi
+            done
+        done < <(directadmin_domains_for_user "$user" 2>/dev/null || true)
+    done < <(directadmin_user_list 2>/dev/null || true)
     return 0
 }
 
 collect_search_bases() {
     WP2SHELL_SEARCH_BASES=()
+    local -A seen_bases=()
+    local candidate
+    local -a discovered=()
+    if [ "${WP2SHELL_USE_DIRECTADMIN_ENUMERATION:-1}" = "1" ]; then
+        while IFS= read -r candidate; do
+            if [ -n "$candidate" ]; then
+                discovered+=("$candidate")
+            fi
+        done < <(directadmin_docroots_from_cli 2>/dev/null || true)
+        if [ "${#discovered[@]}" -gt 0 ]; then
+            log_debug "Docroots via da docs-root: ${#discovered[@]}"
+        else
+            while IFS= read -r candidate; do
+                if [ -n "$candidate" ]; then
+                    discovered+=("$candidate")
+                fi
+            done < <(directadmin_docroots_from_data 2>/dev/null || true)
+            if [ "${#discovered[@]}" -gt 0 ]; then
+                log_debug "Docroots via DirectAdmin datamappen: ${#discovered[@]}"
+            fi
+        fi
+    fi
     local glob expanded
-    local -a matches
     for glob in "${WP2SHELL_DOCROOT_GLOBS[@]}"; do
-        matches=()
         for expanded in $glob; do
             if [ -d "$expanded" ]; then
-                matches+=("$expanded")
+                discovered+=("$expanded")
             fi
         done
-        if [ "${#matches[@]}" -gt 0 ]; then
-            WP2SHELL_SEARCH_BASES+=("${matches[@]}")
+    done
+    for candidate in "${discovered[@]+"${discovered[@]}"}"; do
+        if [ -d "$candidate" ] && [ -z "${seen_bases[$candidate]:-}" ]; then
+            seen_bases[$candidate]=1
+            WP2SHELL_SEARCH_BASES+=("$candidate")
         fi
     done
     return 0
@@ -176,19 +318,21 @@ discover_sites() {
     local restrict_site=${2:-}
     local restrict_user=${3:-}
     : > "$output_file"
+    WP2SHELL_DISCOVERY_INCOMPLETE=0
     local -A seen_roots=()
     local -a candidate_files=()
+    local raw_list
+    raw_list=$(mktemp -t wp2shell-roots.XXXXXXXX)
+    register_temp_cleanup "$raw_list"
     if [ -n "$restrict_site" ]; then
         if [ ! -d "$restrict_site" ]; then
             log_error "Opgegeven site bestaat niet: $restrict_site"
             return 1
         fi
         if [ -f "$restrict_site/wp-includes/version.php" ]; then
-            candidate_files+=("$restrict_site/wp-includes/version.php")
+            printf '%s\0' "$restrict_site/wp-includes/version.php" > "$raw_list"
         else
-            while IFS= read -r -d '' found; do
-                candidate_files+=("$found")
-            done < <(find_wordpress_roots_under "$restrict_site")
+            collect_wordpress_roots_into "$raw_list" "$restrict_site"
         fi
     else
         collect_search_bases
@@ -196,31 +340,46 @@ discover_sites() {
             log_warn "Geen docroots gevonden onder de geconfigureerde paden"
             return 0
         fi
-        local base
+        local -a selected_bases=()
+        local base base_user
         for base in "${WP2SHELL_SEARCH_BASES[@]}"; do
             if [ -n "$restrict_user" ]; then
-                local base_user
                 base_user=$(directadmin_user_from_path "$base") || base_user=''
                 if [ "$base_user" != "$restrict_user" ]; then
                     continue
                 fi
             fi
-            log_debug "Doorzoeken van $base"
-            while IFS= read -r -d '' found; do
-                candidate_files+=("$found")
-            done < <(find_wordpress_roots_under "$base")
+            selected_bases+=("$base")
         done
+        if [ "${#selected_bases[@]}" -eq 0 ]; then
+            log_warn "Geen docroots die aan het filter voldoen"
+            return 0
+        fi
+        collect_wordpress_roots_into "$raw_list" "${selected_bases[@]}"
     fi
-    local version_file site_path resolved_path count=0
+    local found
+    while IFS= read -r -d '' found; do
+        candidate_files+=("$found")
+    done < "$raw_list"
+    local -A seen_inodes=()
+    local version_file site_path resolved_path inode_key count=0
     for version_file in "${candidate_files[@]+"${candidate_files[@]}"}"; do
         site_path=${version_file%/wp-includes/version.php}
         if [ -z "$site_path" ] || [ ! -d "$site_path" ]; then
             continue
         fi
         resolved_path=$(readlink -f -- "$site_path" 2>/dev/null) || resolved_path="$site_path"
+        inode_key=$(stat -c '%d:%i' -- "$version_file" 2>/dev/null) || inode_key=''
+        if [ -n "$inode_key" ] && [ -n "${seen_inodes[$inode_key]:-}" ]; then
+            log_debug "Dubbele installatie overgeslagen, zelfde inode: $site_path"
+            continue
+        fi
         if [ -n "${seen_roots[$resolved_path]:-}" ]; then
             log_debug "Dubbele installatie overgeslagen via symlink: $site_path"
             continue
+        fi
+        if [ -n "$inode_key" ]; then
+            seen_inodes[$inode_key]=1
         fi
         seen_roots[$resolved_path]=1
         if ! emit_site_record "$site_path" "$resolved_path" >> "$output_file"; then
@@ -230,6 +389,15 @@ discover_sites() {
         count=$((count + 1))
     done
     log_info "Discovery voltooid, $count WordPress-installaties gevonden"
+    if [ "${WP2SHELL_DISCOVERY_INCOMPLETE:-0}" = "1" ]; then
+        record_finding \
+            "severity=$SEVERITY_MEDIUM" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=scan-incomplete" \
+            "title=De inventarisatie is mogelijk onvolledig" \
+            "detail=Tijdens het doorzoeken van de docroots waren niet alle mappen leesbaar. Er kunnen WordPress-installaties gemist zijn, dus dit rapport mag niet als volledig dekkend gelezen worden." \
+            "remediation=Draai de scan als root en controleer de rechten op de betrokken mappen."
+    fi
     return 0
 }
 
@@ -267,6 +435,7 @@ emit_site_record() {
     printf '{'
     printf '"site_id":%s,' "$(json_string "$(site_identifier "$resolved_path")")"
     printf '"site_path":%s,' "$(json_string "$resolved_path")"
+    printf '"site_path_b64":%s,' "$(json_string "$(path_to_base64 "$resolved_path")")"
     printf '"discovered_path":%s,' "$(json_string "$site_path")"
     printf '"owner_user":%s,' "$(json_string "$owner_user")"
     printf '"owner_group":%s,' "$(json_string "$owner_group")"

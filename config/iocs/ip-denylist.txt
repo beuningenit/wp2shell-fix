@@ -1,0 +1,1 @@
+45.79.167.238:Linode, door Wiz op 22 juli 2026 ingetrokken als legitieme scanner, blijft opduiken via verouderde IOC-feeds en mag nooit alarmeren
