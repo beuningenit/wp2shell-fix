@@ -1,0 +1,5 @@
+reports/*
+!reports/.gitkeep
+*.swp
+*.tmp
+wp-cli.phar

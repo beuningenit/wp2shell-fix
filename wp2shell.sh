@@ -1,0 +1,452 @@
+#!/bin/bash
+set -euo pipefail
+
+WP2SHELL_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+WP2SHELL_TOOLKIT_VERSION="1.0.0"
+
+. "$WP2SHELL_ROOT/lib/common.sh"
+. "$WP2SHELL_ROOT/lib/version.sh"
+. "$WP2SHELL_ROOT/lib/discovery.sh"
+. "$WP2SHELL_ROOT/lib/report.sh"
+
+OPT_SUBCOMMAND=""
+OPT_APPLY=0
+OPT_SITE=""
+OPT_USER=""
+OPT_EMAIL=""
+OPT_PARALLEL=""
+OPT_QUARANTINE_DIR=""
+OPT_BACKUP_DIR=""
+OPT_REMOVE_ADMINS=0
+OPT_MAINTENANCE=0
+OPT_CONFIG=""
+OPT_NO_MAIL=0
+OPT_RUN_ID=""
+
+usage() {
+    cat <<'USAGE'
+wp2shell.sh, detectie- en opschoontoolkit voor de wp2shell-kwetsbaarheden
+
+Gebruik:
+  wp2shell.sh <subcommando> [opties]
+
+Subcommando's:
+  scan       Read-only inventarisatie en detectie. Wijzigt niets. Standaardgedrag.
+  clean      Opschonen van besmette installaties. Doet niets zonder --apply.
+  harden     Preventie toepassen. Wijzigende stappen alleen met --apply.
+  report     Laatste resultaten opnieuw renderen en optioneel mailen.
+
+Opties:
+  --apply                 Schakel wijzigende acties in. Zonder deze vlag wordt niets gewijzigd.
+  --site <pad>            Beperk tot een enkele WordPress-installatie.
+  --user <gebruiker>      Beperk tot een DirectAdmin-gebruiker.
+  --email <adres>         Stuur het rapport naar dit adres.
+  --no-mail               Verstuur geen e-mail, schrijf alleen bestanden.
+  --parallel <n>          Aantal gelijktijdige sites. Standaard 1.
+  --quarantine-dir <pad>  Locatie voor bestanden in quarantaine.
+  --backup-dir <pad>      Locatie voor backups.
+  --remove-admins         Sta het verwijderen van verdachte adminaccounts toe. Aparte opt-in.
+  --maintenance           Zet de site in onderhoudsmodus tijdens het opschonen.
+  --config <pad>          Alternatief configuratiebestand.
+  --run-id <id>           Hergebruik een bestaande run, alleen voor report.
+  --verbose               Toon debugmeldingen.
+  --help                  Toon deze hulptekst.
+
+Exitcodes:
+  0   geen bevindingen
+  1   verkeerd gebruik
+  2   interne fout
+  3   een andere run is al bezig
+  10  alleen informatieve bevindingen
+  20  lage ernst
+  30  middelhoge ernst, handmatige review nodig
+  40  hoge ernst, kwetsbare versie of vermoedelijke blootstelling
+  50  kritiek, bevestigde compromittering
+
+Voorbeelden:
+  wp2shell.sh scan
+  wp2shell.sh scan --user klantnaam
+  wp2shell.sh clean --site /home/klant/domains/voorbeeld.nl/public_html --apply
+  wp2shell.sh harden --apply
+USAGE
+}
+
+parse_arguments() {
+    if [ "$#" -eq 0 ]; then
+        usage
+        exit "$EXIT_USAGE"
+    fi
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+            scan|clean|harden|report)
+                if [ -n "$OPT_SUBCOMMAND" ]; then
+                    log_error "Meerdere subcommando's opgegeven: $OPT_SUBCOMMAND en $1"
+                    exit "$EXIT_USAGE"
+                fi
+                OPT_SUBCOMMAND=$1
+                ;;
+            --apply) OPT_APPLY=1 ;;
+            --remove-admins) OPT_REMOVE_ADMINS=1 ;;
+            --maintenance) OPT_MAINTENANCE=1 ;;
+            --no-mail) OPT_NO_MAIL=1 ;;
+            --verbose) WP2SHELL_VERBOSE=1 ;;
+            --help|-h) usage; exit "$EXIT_OK" ;;
+            --site)
+                shift || true
+                OPT_SITE=${1:-}
+                if [ -z "$OPT_SITE" ]; then
+                    log_error "--site vereist een pad"
+                    exit "$EXIT_USAGE"
+                fi
+                ;;
+            --user)
+                shift || true
+                OPT_USER=${1:-}
+                if [ -z "$OPT_USER" ]; then
+                    log_error "--user vereist een gebruikersnaam"
+                    exit "$EXIT_USAGE"
+                fi
+                ;;
+            --email)
+                shift || true
+                OPT_EMAIL=${1:-}
+                if [ -z "$OPT_EMAIL" ]; then
+                    log_error "--email vereist een adres"
+                    exit "$EXIT_USAGE"
+                fi
+                ;;
+            --parallel)
+                shift || true
+                OPT_PARALLEL=${1:-}
+                case $OPT_PARALLEL in
+                    ''|*[!0-9]*)
+                        log_error "--parallel vereist een geheel getal"
+                        exit "$EXIT_USAGE"
+                        ;;
+                esac
+                ;;
+            --quarantine-dir)
+                shift || true
+                OPT_QUARANTINE_DIR=${1:-}
+                ;;
+            --backup-dir)
+                shift || true
+                OPT_BACKUP_DIR=${1:-}
+                ;;
+            --config)
+                shift || true
+                OPT_CONFIG=${1:-}
+                ;;
+            --run-id)
+                shift || true
+                OPT_RUN_ID=${1:-}
+                ;;
+            *)
+                log_error "Onbekende optie: $1"
+                usage
+                exit "$EXIT_USAGE"
+                ;;
+        esac
+        shift || true
+    done
+    if [ -z "$OPT_SUBCOMMAND" ]; then
+        OPT_SUBCOMMAND=scan
+    fi
+}
+
+validate_arguments() {
+    if [ "$OPT_SUBCOMMAND" = "scan" ] && [ "$OPT_APPLY" = "1" ]; then
+        log_error "scan is altijd read-only, gebruik clean of harden met --apply"
+        exit "$EXIT_USAGE"
+    fi
+    if [ "$OPT_REMOVE_ADMINS" = "1" ] && [ "$OPT_SUBCOMMAND" != "clean" ]; then
+        log_error "--remove-admins hoort bij clean"
+        exit "$EXIT_USAGE"
+    fi
+    if [ "$OPT_REMOVE_ADMINS" = "1" ] && [ "$OPT_APPLY" != "1" ]; then
+        log_warn "--remove-admins zonder --apply, verdachte accounts worden alleen gerapporteerd"
+    fi
+    if [ -n "$OPT_SITE" ] && [ -n "$OPT_USER" ]; then
+        log_error "Gebruik --site of --user, niet allebei"
+        exit "$EXIT_USAGE"
+    fi
+    return 0
+}
+
+apply_option_overrides() {
+    if [ -n "$OPT_EMAIL" ]; then
+        WP2SHELL_REPORT_EMAIL="$OPT_EMAIL"
+    fi
+    if [ -n "$OPT_PARALLEL" ]; then
+        WP2SHELL_PARALLEL_JOBS="$OPT_PARALLEL"
+    fi
+    if [ -n "$OPT_QUARANTINE_DIR" ]; then
+        WP2SHELL_QUARANTINE_DIR="$OPT_QUARANTINE_DIR"
+    fi
+    if [ -n "$OPT_BACKUP_DIR" ]; then
+        WP2SHELL_BACKUP_DIR="$OPT_BACKUP_DIR"
+    fi
+    return 0
+}
+
+resolve_report_directory() {
+    local preferred=${WP2SHELL_REPORT_DIR:-}
+    if [ -n "$preferred" ] && mkdir -p -- "$preferred" 2>/dev/null && [ -w "$preferred" ]; then
+        printf '%s' "$preferred"
+        return 0
+    fi
+    local fallback="$WP2SHELL_ROOT/reports"
+    mkdir -p -- "$fallback" 2>/dev/null || true
+    printf '%s' "$fallback"
+    return 0
+}
+
+setup_run_environment() {
+    WP2SHELL_RUN_ID="${OPT_RUN_ID:-$(timestamp_compact)-$$}"
+    local report_base
+    report_base=$(resolve_report_directory)
+    WP2SHELL_REPORT_DIR="$report_base"
+    WP2SHELL_RUN_DIR="$report_base/$WP2SHELL_RUN_ID"
+    if ! mkdir -p -- "$WP2SHELL_RUN_DIR"; then
+        die "$EXIT_INTERNAL" "Kan rapportmap niet aanmaken: $WP2SHELL_RUN_DIR"
+    fi
+    chmod 0750 -- "$WP2SHELL_RUN_DIR" 2>/dev/null || true
+    WP2SHELL_RUN_LOG="$WP2SHELL_RUN_DIR/run.log"
+    WP2SHELL_AUDIT_LOG="$WP2SHELL_RUN_DIR/audit.log"
+    WP2SHELL_FINDINGS_FILE="$WP2SHELL_RUN_DIR/findings.ndjson"
+    WP2SHELL_SITES_FILE="$WP2SHELL_RUN_DIR/sites.ndjson"
+    WP2SHELL_REPORT_JSON="$WP2SHELL_RUN_DIR/report.json"
+    WP2SHELL_REPORT_TEXT="$WP2SHELL_RUN_DIR/samenvatting.txt"
+    : > "$WP2SHELL_FINDINGS_FILE"
+    : > "$WP2SHELL_SITES_FILE"
+    WP2SHELL_STARTED_AT=$(timestamp_iso)
+    return 0
+}
+
+check_dependencies() {
+    if ! require_command php find grep sha1sum curl tar date stat; then
+        die "$EXIT_INTERNAL" "Niet alle vereiste commando's zijn aanwezig"
+    fi
+    detect_optional_commands
+    if [ "${WP2SHELL_HAS_JQ:-0}" != "1" ]; then
+        log_debug "jq is niet aanwezig, er wordt teruggevallen op de ingebouwde JSON-verwerking"
+    fi
+    return 0
+}
+
+warn_about_privileges() {
+    local user
+    user=$(current_user_name)
+    if [ "$user" != "root" ]; then
+        if [ "$OPT_SUBCOMMAND" = "clean" ] || [ "$OPT_SUBCOMMAND" = "harden" ]; then
+            log_warn "Deze run draait als $user en niet als root, acties op andere gebruikers zullen falen"
+        else
+            log_warn "Deze run draait als $user en niet als root, niet alle installaties zijn zichtbaar"
+        fi
+    fi
+    return 0
+}
+
+classify_discovered_sites() {
+    local sites_file=$1
+    local enriched="$sites_file.enriched"
+    : > "$enriched"
+    local record site_path
+    while IFS= read -r record || [ -n "$record" ]; do
+        if [ -z "$record" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$record" site_path) || site_path=''
+        if [ -z "$site_path" ]; then
+            printf '%s\n' "$record" >> "$enriched"
+            continue
+        fi
+        if ! evaluate_site_version "$site_path"; then
+            log_warn "Kan versie niet bepalen voor $site_path"
+            printf '%s\n' "${record%\}}, \"version\":null, \"version_readable\":false}" >> "$enriched"
+            record_finding \
+                "site=$site_path" \
+                "severity=$SEVERITY_MEDIUM" \
+                "confidence=$CONFIDENCE_HEURISTIC" \
+                "category=version-unreadable" \
+                "title=Versie kon niet gelezen worden" \
+                "detail=wp-includes/version.php is aanwezig maar bevat geen leesbare versie. Dit kan wijzen op een beschadigde of gemanipuleerde installatie." \
+                "remediation=Controleer deze installatie handmatig."
+            continue
+        fi
+        append_version_fields "$record" >> "$enriched"
+        report_version_findings "$site_path"
+    done < "$sites_file"
+    mv -f -- "$enriched" "$sites_file"
+    return 0
+}
+
+append_version_fields() {
+    local record=$1
+    printf '%s,' "${record%\}}"
+    printf '"version":%s,' "$(json_string "$WP2SHELL_SITE_VERSION")"
+    printf '"branch":%s,' "$(json_string "$WP2SHELL_SITE_BRANCH")"
+    printf '"db_version":%s,' "$(json_string "$WP2SHELL_SITE_DB_VERSION")"
+    printf '"wp2shell_status":%s,' "$(json_string "$WP2SHELL_SITE_WP2SHELL_STATUS")"
+    printf '"security_status":%s,' "$(json_string "$WP2SHELL_SITE_SECURITY_STATUS")"
+    printf '"target_version":%s,' "$(json_string "$WP2SHELL_SITE_TARGET_VERSION")"
+    printf '"version_readable":true'
+    printf '}\n'
+    return 0
+}
+
+report_version_findings() {
+    local site_path=$1
+    local status="$WP2SHELL_SITE_WP2SHELL_STATUS"
+    local severity
+    severity=$(severity_for_wp2shell_status "$status")
+    case $status in
+        "$WP2SHELL_STATUS_RCE_VULNERABLE")
+            record_finding \
+                "site=$site_path" \
+                "severity=$severity" \
+                "confidence=$CONFIDENCE_HIGH" \
+                "category=vulnerable-version" \
+                "title=Kwetsbaar voor de volledige wp2shell RCE-keten" \
+                "detail=Deze installatie draait WordPress $WP2SHELL_SITE_VERSION en is kwetsbaar voor CVE-2026-63030 in combinatie met CVE-2026-60137. Dit is pre-auth remote code execution." \
+                "remediation=Werk direct bij naar minimaal $WP2SHELL_SITE_TARGET_VERSION en behandel deze site als mogelijk gecompromitteerd."
+            ;;
+        "$WP2SHELL_STATUS_SQLI_LATENT")
+            record_finding \
+                "site=$site_path" \
+                "severity=$severity" \
+                "confidence=$CONFIDENCE_HIGH" \
+                "category=vulnerable-version" \
+                "title=Kwetsbaar voor de SQL-injectie uit CVE-2026-60137" \
+                "detail=Deze installatie draait WordPress $WP2SHELL_SITE_VERSION. De RCE-keten werkt hier niet, want de batch-route-verwarring bestaat pas vanaf 6.9. De SQL-injectie is alleen misbruikbaar wanneer een plugin of thema onvertrouwde invoer aan author__not_in doorgeeft." \
+                "remediation=Werk bij naar minimaal $WP2SHELL_SITE_TARGET_VERSION."
+            ;;
+        "$WP2SHELL_STATUS_UNKNOWN")
+            record_finding \
+                "site=$site_path" \
+                "severity=$severity" \
+                "confidence=$CONFIDENCE_HEURISTIC" \
+                "category=unknown-version" \
+                "title=Onbekende WordPress-versie" \
+                "detail=De versie $WP2SHELL_SITE_VERSION valt buiten de bekende versietabellen." \
+                "remediation=Controleer handmatig en werk de versietabellen in de configuratie bij."
+            ;;
+    esac
+    if [ "$WP2SHELL_SITE_SECURITY_STATUS" = "$WP2SHELL_SECURITY_OUTDATED" ]; then
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_HIGH" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=outdated-security-release" \
+            "title=Mist de securityrelease van 6 augustus 2026" \
+            "detail=Deze installatie draait WordPress $WP2SHELL_SITE_VERSION. Los van wp2shell is er op 6 augustus 2026 een securityrelease uitgekomen met twaalf oplossingen, waaronder CVE-2026-64638, een pre-auth XSS met een pad naar uitvoering van PHP-code." \
+            "remediation=Werk bij naar $WP2SHELL_SITE_TARGET_VERSION."
+    fi
+    if [ "$WP2SHELL_SITE_SECURITY_STATUS" = "$WP2SHELL_SECURITY_UNSUPPORTED" ]; then
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_HIGH" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=unsupported-version" \
+            "title=Draait een WordPress-versie zonder security-ondersteuning" \
+            "detail=Versie $WP2SHELL_SITE_VERSION krijgt geen beveiligingsupdates meer." \
+            "remediation=Plan een migratie naar een ondersteunde versie."
+    fi
+    if [ -n "$WP2SHELL_SITE_BRANCH" ] && [ -n "$WP2SHELL_SITE_DB_VERSION" ]; then
+        local expected=${WP2SHELL_DB_VERSION_REFERENCE[$WP2SHELL_SITE_BRANCH]:-}
+        if [ -n "$expected" ] && [ "$expected" != "$WP2SHELL_SITE_DB_VERSION" ]; then
+            record_finding \
+                "site=$site_path" \
+                "severity=$SEVERITY_MEDIUM" \
+                "confidence=$CONFIDENCE_HEURISTIC" \
+                "category=version-mismatch" \
+                "title=Databaseversie past niet bij de WordPress-versie" \
+                "detail=version.php meldt versie $WP2SHELL_SITE_VERSION met databaseversie $WP2SHELL_SITE_DB_VERSION, terwijl voor branch $WP2SHELL_SITE_BRANCH databaseversie $expected wordt verwacht. Op een gecompromitteerde host is version.php eenvoudig te vervalsen." \
+                "remediation=Controleer de core-integriteit met wp core verify-checksums."
+        fi
+    fi
+    return 0
+}
+
+command_scan() {
+    log_info "Start read-only scan"
+    if ! discover_sites "$WP2SHELL_SITES_FILE" "$OPT_SITE" "$OPT_USER"; then
+        die "$EXIT_INTERNAL" "Discovery is mislukt"
+    fi
+    classify_discovered_sites "$WP2SHELL_SITES_FILE"
+    return 0
+}
+
+command_clean() {
+    log_error "Het subcommando clean is nog niet beschikbaar in deze versie"
+    return "$EXIT_INTERNAL"
+}
+
+command_harden() {
+    log_error "Het subcommando harden is nog niet beschikbaar in deze versie"
+    return "$EXIT_INTERNAL"
+}
+
+command_report() {
+    if [ -z "$OPT_RUN_ID" ]; then
+        log_error "report vereist --run-id van een eerdere run"
+        return "$EXIT_USAGE"
+    fi
+    if [ ! -s "$WP2SHELL_SITES_FILE" ]; then
+        log_error "Geen resultaten gevonden voor run $OPT_RUN_ID"
+        return "$EXIT_USAGE"
+    fi
+    return 0
+}
+
+finalize_run() {
+    WP2SHELL_FINISHED_AT=$(timestamp_iso)
+    write_report_json "$WP2SHELL_REPORT_JSON"
+    render_dutch_summary "$WP2SHELL_REPORT_TEXT"
+    log_info "Rapport geschreven naar $WP2SHELL_RUN_DIR"
+    if [ "$OPT_NO_MAIL" != "1" ]; then
+        local subject
+        subject="wp2shell rapport $(hostname -s 2>/dev/null || hostname): $(worst_severity_from_findings)"
+        send_report_mail "${WP2SHELL_REPORT_EMAIL:-}" "$subject" \
+            "$WP2SHELL_REPORT_TEXT" "$WP2SHELL_REPORT_JSON" || true
+    fi
+    cat -- "$WP2SHELL_REPORT_TEXT"
+    return 0
+}
+
+main() {
+    install_cleanup_trap
+    parse_arguments "$@"
+    validate_arguments
+    local config_path=${OPT_CONFIG:-$WP2SHELL_ROOT/config/wp2shell.conf}
+    load_configuration "$config_path"
+    apply_option_overrides
+    check_dependencies
+    setup_run_environment
+    warn_about_privileges
+    log_info "wp2shell $WP2SHELL_TOOLKIT_VERSION, subcommando $OPT_SUBCOMMAND, run $WP2SHELL_RUN_ID"
+    if [ "$OPT_APPLY" = "1" ]; then
+        log_warn "Wijzigende modus is ingeschakeld met --apply"
+    else
+        log_info "Rapportagemodus, er wordt niets gewijzigd"
+    fi
+    if [ "$OPT_SUBCOMMAND" != "report" ]; then
+        if ! acquire_run_lock "${WP2SHELL_LOCK_FILE:-/var/run/wp2shell.lock}"; then
+            die "$EXIT_LOCKED" "Er draait al een wp2shell-run, deze run stopt"
+        fi
+    fi
+    case $OPT_SUBCOMMAND in
+        scan) command_scan ;;
+        clean) command_clean ;;
+        harden) command_harden ;;
+        report) command_report ;;
+    esac
+    finalize_run
+    release_run_lock
+    local worst
+    worst=$(worst_severity_from_findings)
+    log_info "Zwaarste bevinding: $worst"
+    exit "$(severity_exit_code "$worst")"
+}
+
+main "$@"
