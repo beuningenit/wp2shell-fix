@@ -209,6 +209,50 @@ json_bool() {
     fi
 }
 
+json_extract_field() {
+    local record=$1 field=$2
+    local pattern="\"$field\":"
+    local remainder=${record#*"$pattern"}
+    if [ "$remainder" = "$record" ]; then
+        return 1
+    fi
+    case $remainder in
+        '"'*)
+            remainder=${remainder#\"}
+            local out='' ch next
+            while [ -n "$remainder" ]; do
+                ch=${remainder:0:1}
+                if [ "$ch" = $'\\' ]; then
+                    next=${remainder:1:1}
+                    case $next in
+                        n) out+=$'\n' ;;
+                        r) out+=$'\r' ;;
+                        t) out+=$'\t' ;;
+                        '"') out+='"' ;;
+                        \\) out+=$'\\' ;;
+                        *) out+="$next" ;;
+                    esac
+                    remainder=${remainder:2}
+                elif [ "$ch" = '"' ]; then
+                    break
+                else
+                    out+="$ch"
+                    remainder=${remainder:1}
+                fi
+            done
+            printf '%s' "$out"
+            return 0
+            ;;
+        *)
+            local value=${remainder%%,*}
+            value=${value%\}}
+            value=${value%\}*}
+            printf '%s' "$value"
+            return 0
+            ;;
+    esac
+}
+
 path_is_within() {
     local resolved_candidate resolved_parent
     if ! resolved_candidate=$(readlink -f -- "$1" 2>/dev/null); then

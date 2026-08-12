@@ -27,7 +27,15 @@ while IFS= read -r -d '' file; do
     if ! "$SHELLCHECK_BIN" -s bash -e "$ENTRYPOINT_EXCLUDES" "$file"; then
         failures=$((failures + 1))
     fi
-done < <(find . -maxdepth 2 -type f -name '*.sh' -not -path './lib/*' -print0 2>/dev/null)
+done < <(find . -maxdepth 2 -type f -name '*.sh' \
+    -not -path './lib/*' -not -path './tests/*' -not -path './.git/*' -print0 2>/dev/null)
+
+printf 'Shellcheck op tests\n'
+while IFS= read -r -d '' file; do
+    if ! "$SHELLCHECK_BIN" -s bash -e "$LIBRARY_EXCLUDES" "$file"; then
+        failures=$((failures + 1))
+    fi
+done < <(find tests -type f -name '*.sh' -print0 2>/dev/null)
 
 printf 'Controle op em dash en en dash\n'
 if grep -rInP '[\x{2014}\x{2013}]' --include='*.sh' --include='*.md' --include='*.conf' --include='*.txt' . ; then
