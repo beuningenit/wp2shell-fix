@@ -224,10 +224,13 @@ setup_run_environment() {
 }
 
 check_dependencies() {
-    if ! require_command php find grep sha1sum curl tar date stat; then
+    if ! require_command php sha1sum curl date stat base64; then
         die "$EXIT_INTERNAL" "Niet alle vereiste commando's zijn aanwezig"
     fi
     detect_optional_commands
+    if ! resolve_external_tools; then
+        die "$EXIT_INTERNAL" "Kan de vereiste externe tools niet vaststellen"
+    fi
     if [ "${WP2SHELL_HAS_JQ:-0}" != "1" ]; then
         log_debug "jq is niet aanwezig, er wordt teruggevallen op de ingebouwde JSON-verwerking"
     fi

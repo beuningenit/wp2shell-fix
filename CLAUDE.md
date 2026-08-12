@@ -160,13 +160,34 @@ Exitcodes weerspiegelen de ernstigste bevinding, zodat cron en monitoring erop k
 
 ### OpenLiteSpeed
 
+- **`.htaccess` wordt eenmalig gelezen en daarna gecachet voor de levensduur van het proces.**
+  OpenLiteSpeed parseert de docroot-`.htaccess` bij het laden van de vhostconfig en elke
+  submap-`.htaccess` bij de eerste toegang tot die map. Er is nergens een mtime-hercontrole.
+  Gevolg: elke hardeningregel die via SSH wordt weggeschreven doet niets tot er een
+  `lswsctrl restart` is geweest. Schrijf daarom eerst alle wijzigingen, dan een enkele graceful
+  restart, en verifieer pas daarna. Wie schrijft en meteen met curl verifieert, ziet correcte
+  regels als mislukt.
 - `.htaccess` wordt alleen gelezen als rewrite aan staat voor de vhost. Detecteer dat, neem het niet aan.
 - `<Files>`, `<FilesMatch>`, `php_value` en `Require`/`Deny from` werken niet betrouwbaar. Gebruik
   `RewriteRule` en `RewriteCond`.
 - Bewerk de door DirectAdmin beheerde vhostconfig niet met de hand. DirectAdmin overschrijft die bij
   een rewrite. Gebruik ModSecurity of DirectAdmin custom config-includes.
-- Stel het actieve ModSecurity-regelpad op de server zelf vast. Neem geen pad aan.
+- **Er is geen canoniek ModSecurity-regelpad** op DirectAdmin met OpenLiteSpeed. Er zijn minstens
+  vier varianten, afhankelijk van hoe de server gebouwd is, en `include` accepteert wildcards op elke
+  positie. Parseer de werkelijk geladen configketen en bewijs bereikbaarheid met een canary-regel
+  voordat je rapporteert dat regels actief zijn. Anders meld je containment die er niet is.
 - Object cache is geen mitigatie. Behandel het nooit als fix.
+
+### Externe tools
+
+Resolveer `find`, `grep` en `tar` naar absolute paden en controleer dat het de GNU-varianten zijn.
+De veiligheidsgaranties rond symlinks hangen daarvan af, en een shellfunctie of een niet-GNU
+lookalike verandert die semantiek stil. `grep -R` met hoofdletter volgt symlinks naar buiten de boom
+en leest daarmee de data van een andere klant. Gebruik `grep -r` of stuur grep aan vanuit find.
+
+`grep -q` geeft exitcode 1 bij geen match. Voor een malwarescanner is geen match het normale geval,
+dus elke detectie-grep moet afgevangen worden met `if grep -q ...; then` of `|| true`. Zonder dat
+stopt de scan op de eerste schone site.
 
 ### DirectAdmin
 
