@@ -563,6 +563,10 @@ file_sha1() {
     sha1sum -- "$1" 2>/dev/null | cut -d' ' -f1
 }
 
+file_sha256() {
+    sha256sum -- "$1" 2>/dev/null | cut -d' ' -f1
+}
+
 file_size_bytes() {
     stat -c '%s' -- "$1" 2>/dev/null
 }
