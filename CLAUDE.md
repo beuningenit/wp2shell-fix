@@ -32,6 +32,8 @@ commandoregel in `tools/lint.sh`, met deze motivering:
 - `SC1090` en `SC1091`: het configuratiebestand wordt op runtime gesourced en het pad is variabel.
 - `SC2034`: `lib/common.sh` is een gedeelde library. Variabelen die daar gedefinieerd worden lijken
   ongebruikt maar worden door de andere modules geconsumeerd.
+- `SC2016`: strings met `$argv[1]` of `$wp_version` zijn PHP-broncode of een grep-patroon. Die mogen
+  juist niet door Bash geexpandeerd worden.
 - `SC2254`: allowlist-entries zijn bewust globs, geen letterlijke strings. `*@beuningenit.nl` en
   `/home/*/domains/*/public_html/maatwerk/*` moeten als patroon matchen.
 
