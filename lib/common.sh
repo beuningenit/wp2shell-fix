@@ -193,6 +193,16 @@ json_string() {
     printf '"%s"' "$(json_escape_string "$1")"
 }
 
+path_to_base64() {
+    printf '%s' "$1" | base64 -w0 2>/dev/null || printf '%s' "$1" | base64 | tr -d '\n'
+}
+
+path_is_json_lossy() {
+    local original=$1 roundtrip
+    roundtrip=$(sanitize_text "$original")
+    [ "$roundtrip" != "$original" ]
+}
+
 json_number_or_null() {
     case $1 in
         '') printf 'null' ;;
@@ -559,6 +569,8 @@ record_finding() {
         printf '"title":%s,' "$(json_string "$title")"
         printf '"detail":%s,' "$(json_string "$detail")"
         printf '"file_path":%s,' "$(json_string "$file_path")"
+        printf '"file_path_b64":%s,' "$(json_string "$(path_to_base64 "$file_path")")"
+        printf '"file_path_lossy":%s,' "$(json_bool "$(path_is_json_lossy "$file_path" && printf '1' || printf '0')")"
         printf '"sha1":%s,' "$(json_string "$sha1")"
         printf '"evidence":%s,' "$(json_string "$evidence")"
         printf '"remediation":%s,' "$(json_string "$remediation")"

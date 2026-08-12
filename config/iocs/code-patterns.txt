@@ -1,0 +1,26 @@
+unpack:high:eval(gzuncompress(base64_decode(
+unpack:high:eval(gzinflate(base64_decode(
+unpack:high:eval(str_rot13(
+unpack:high:eval(gzdecode(base64_decode(
+backdoor:high:eval($_POST
+backdoor:high:eval($_GET
+backdoor:high:eval($_REQUEST
+backdoor:high:eval($_COOKIE
+backdoor:high:assert($_POST
+backdoor:high:assert($_GET
+backdoor:high:assert($_REQUEST
+sink:medium:passthru(
+sink:medium:shell_exec(
+sink:medium:proc_open(
+sink:medium:popen(
+sink:medium:system(
+deprecated:medium:create_function(
+rest-open:high:permission_callback' => '__return_true
+rest-open:high:permission_callback" => "__return_true
+rest-namespace:high:morning/v1
+obfuscation:low:base64_decode(
+obfuscation:low:gzinflate(
+obfuscation:low:str_rot13(
+obfuscation:low:hex2bin(
+prepend:high:auto_prepend_file
+fake-author:medium:Author: WordPress.org Community
