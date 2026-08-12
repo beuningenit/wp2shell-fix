@@ -686,6 +686,7 @@ detect_files_report_php_in_writable_directory() {
         "detail=In $location hoort geen PHP te staan. WordPress schrijft daar media en cachebestanden, geen code. Een PHP-bestand op deze plek is de klassieke uitkomst van een upload-webshell en dit signaal is onafhankelijk van naamgeving of versie. Omvang $size bytes." \
         "file=$candidate" \
         "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
+        "evidence=$relative" \
         "remediation=Zet dit bestand in quarantaine en blokkeer daarna de uitvoering van PHP in uploads en cache."
     return 0
 }
@@ -715,7 +716,7 @@ detect_files_report_suspicious_name() {
         "confidence=$CONFIDENCE_HEURISTIC" \
         "category=suspicious-name" \
         "title=Verdachte bestandsnaam voor de wp2shell-campagne" \
-        "detail=De naam $base is verdacht omdat $reason.$location_note Omvang $size bytes, $size_note. Naamgeving is uitsluitend bedoeld om deze site hoger in de handmatige triage te zetten, het is op zichzelf nooit voldoende bewijs, want de aanvaller kiest de naam vrij." \
+        "detail=De naam $base valt op. Reden: $reason.$location_note Omvang $size bytes, $size_note. Naamgeving is uitsluitend bedoeld om deze site hoger in de handmatige triage te zetten, het is op zichzelf nooit voldoende bewijs, want de aanvaller kiest de naam vrij." \
         "file=$candidate" \
         "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
         "evidence=$base" \
@@ -897,7 +898,7 @@ detect_files_scan_file_content() {
             "confidence=$confidence_level" \
             "category=backdoor-pattern" \
             "title=Backdoor- of obfuscatiepatroon in PHP-bestand" \
-            "detail=Dit bestand bevat een patroon dat op de lijst met sterke indicatoren staat. Er zijn $WP2SHELL_DETECT_FILES_SIGNAL_COUNT signalen geteld: $(detect_files_signal_summary). Vanaf twee onafhankelijke signalen wordt dit als bevestigd gerapporteerd, bij een enkel signaal blijft het heuristisch, omdat ook legitieme code deze functies gebruikt." \
+            "detail=Dit bestand bevat een patroon dat op de lijst met sterke indicatoren staat. Aantal getelde signalen: $WP2SHELL_DETECT_FILES_SIGNAL_COUNT. Signalen: $(detect_files_signal_summary). Vanaf twee onafhankelijke signalen wordt dit als bevestigd gerapporteerd, bij een enkel signaal blijft het heuristisch, omdat ook legitieme code deze functies gebruikt." \
             "file=$candidate" \
             "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
             "evidence=$(detect_files_first_match_line "$candidate" "$strongest_literal")" \
@@ -911,7 +912,7 @@ detect_files_scan_file_content() {
             "confidence=$CONFIDENCE_HEURISTIC" \
             "category=suspicious-code" \
             "title=Verdachte combinatie van functies in PHP-bestand" \
-            "detail=Er zijn $WP2SHELL_DETECT_FILES_SIGNAL_COUNT signalen geteld: $(detect_files_signal_summary). Elk signaal afzonderlijk komt ook in legitieme plugins voor, de combinatie verdient handmatige review. Er wordt hier bewust niets als bevestigd gemeld." \
+            "detail=Aantal getelde signalen: $WP2SHELL_DETECT_FILES_SIGNAL_COUNT. Signalen: $(detect_files_signal_summary). Elk signaal afzonderlijk komt ook in legitieme plugins voor, de combinatie verdient handmatige review. Er wordt hier bewust niets als bevestigd gemeld." \
             "file=$candidate" \
             "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
             "evidence=$(detect_files_first_match_line "$candidate" "$medium_literal")" \
@@ -1135,7 +1136,7 @@ detect_files_report_suspicious_directories() {
                 "confidence=$CONFIDENCE_HEURISTIC" \
                 "category=suspicious-plugin-name" \
                 "title=Verdachte mapnaam $name" \
-                "detail=De map $entry valt op omdat $reason. Naamgeving is alleen bedoeld voor de volgorde van handmatige triage. De leveranciers melden sterk uiteenlopende namen, dus een afwijkende naam bewijst niets en een gewone naam pleit niet vrij." \
+                "detail=De map $entry valt op. Reden: $reason. Naamgeving is alleen bedoeld voor de volgorde van handmatige triage. De leveranciers melden sterk uiteenlopende namen, dus een verdachte naam bewijst niets en een gewone naam pleit niet vrij." \
                 "file=$entry" \
                 "evidence=$name" \
                 "remediation=Controleer of deze map bij een plugin hoort die de beheerder zelf heeft geinstalleerd."

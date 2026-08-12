@@ -7,6 +7,9 @@ WP2SHELL_TOOLKIT_VERSION="1.0.0"
 . "$WP2SHELL_ROOT/lib/common.sh"
 . "$WP2SHELL_ROOT/lib/version.sh"
 . "$WP2SHELL_ROOT/lib/discovery.sh"
+. "$WP2SHELL_ROOT/lib/detect_files.sh"
+. "$WP2SHELL_ROOT/lib/detect_wp.sh"
+. "$WP2SHELL_ROOT/lib/detect_logs.sh"
 . "$WP2SHELL_ROOT/lib/backup.sh"
 . "$WP2SHELL_ROOT/lib/quarantine.sh"
 . "$WP2SHELL_ROOT/lib/clean.sh"
@@ -377,6 +380,9 @@ report_version_findings() {
 
 run_detection_over_sites() {
     local line site_path owner_user domain rc
+    if ! require_detection_modules; then
+        return 1
+    fi
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -399,17 +405,32 @@ run_detection_over_sites() {
     return 0
 }
 
+require_detection_modules() {
+    local missing=() name
+    for name in detect_files_for_site detect_wp_for_site detect_logs_for_site; do
+        if ! declare -F "$name" >/dev/null 2>&1; then
+            missing+=("$name")
+        fi
+    done
+    if [ "${#missing[@]}" -gt 0 ]; then
+        log_error "Detectiemodules ontbreken: ${missing[*]}"
+        record_finding \
+            "severity=$SEVERITY_CRITICAL" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=detection-unavailable" \
+            "title=Er is helemaal geen detectie uitgevoerd" \
+            "detail=De volgende detectiefuncties zijn niet geladen: ${missing[*]}. Er is dus alleen op versienummer gekeken. Dit rapport zegt niets over besmetting en mag onder geen beding als schoon gelezen worden." \
+            "remediation=Controleer of de installatie compleet is en draai de scan opnieuw."
+        return 1
+    fi
+    return 0
+}
+
 detect_all_for_site() {
     local site_path=$1 owner_user=$2 domain=$3
-    if declare -F detect_files_for_site >/dev/null 2>&1; then
-        detect_files_for_site "$site_path" "$owner_user" || true
-    fi
-    if declare -F detect_wp_for_site >/dev/null 2>&1; then
-        detect_wp_for_site "$site_path" "$owner_user" || true
-    fi
-    if declare -F detect_logs_for_site >/dev/null 2>&1; then
-        detect_logs_for_site "$site_path" "$domain" || true
-    fi
+    detect_files_for_site "$site_path" "$owner_user" || true
+    detect_wp_for_site "$site_path" "$owner_user" || true
+    detect_logs_for_site "$site_path" "$domain" || true
     return 0
 }
 

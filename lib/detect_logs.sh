@@ -24,6 +24,8 @@ WP2SHELL_LOG_COLLECTION_INCOMPLETE=0
 WP2SHELL_LOG_SITE_VERSION=""
 WP2SHELL_LOG_SITE_STATUS="unknown"
 WP2SHELL_LOG_PARAMETER_VALUE=""
+WP2SHELL_LOG_TIER_RANK=0
+WP2SHELL_LOG_BATCH_KEY=""
 WP2SHELL_LOG_ENTRY_ADDRESS=""
 WP2SHELL_LOG_ENTRY_TIER=""
 WP2SHELL_LOG_ENTRY_DESCRIPTION=""
@@ -58,24 +60,13 @@ detect_logs_ioc_directory() {
     return 1
 }
 
-detect_logs_tier_rank() {
+detect_logs_set_tier_rank() {
     case $1 in
-        high) printf '3' ;;
-        medium) printf '2' ;;
-        low) printf '1' ;;
-        *) printf '0' ;;
+        high) WP2SHELL_LOG_TIER_RANK=3 ;;
+        medium) WP2SHELL_LOG_TIER_RANK=2 ;;
+        low) WP2SHELL_LOG_TIER_RANK=1 ;;
+        *) WP2SHELL_LOG_TIER_RANK=0 ;;
     esac
-}
-
-detect_logs_higher_tier() {
-    local left=$1 right=$2 left_rank right_rank
-    left_rank=$(detect_logs_tier_rank "$left")
-    right_rank=$(detect_logs_tier_rank "$right")
-    if [ "$right_rank" -gt "$left_rank" ]; then
-        printf '%s' "$right"
-        return 0
-    fi
-    printf '%s' "$left"
     return 0
 }
 
@@ -627,24 +618,24 @@ detect_logs_extract_parameter_value() {
     return 0
 }
 
-detect_logs_batch_group_key() {
-    local tier=$1 status=$2
-    if [ "$tier" != "high" ]; then
-        if [ "$tier" = "medium" ]; then
-            printf 'batch|weak-medium'
+detect_logs_set_batch_group_key() {
+    local rank=$1 status=$2
+    if [ "$rank" -lt 3 ]; then
+        if [ "$rank" -eq 2 ]; then
+            WP2SHELL_LOG_BATCH_KEY='batch|weak-medium'
         else
-            printf 'batch|weak-low'
+            WP2SHELL_LOG_BATCH_KEY='batch|weak-low'
         fi
         return 0
     fi
     case $status in
-        207) printf 'batch|207' ;;
-        200) printf 'batch|200' ;;
-        2*) printf 'batch|other' ;;
-        4*) printf 'batch|probe' ;;
-        5*) printf 'batch|error' ;;
-        '') printf 'batch|unknown' ;;
-        *) printf 'batch|other' ;;
+        207) WP2SHELL_LOG_BATCH_KEY='batch|207' ;;
+        200) WP2SHELL_LOG_BATCH_KEY='batch|200' ;;
+        2*) WP2SHELL_LOG_BATCH_KEY='batch|other' ;;
+        4*) WP2SHELL_LOG_BATCH_KEY='batch|probe' ;;
+        5*) WP2SHELL_LOG_BATCH_KEY='batch|error' ;;
+        '') WP2SHELL_LOG_BATCH_KEY='batch|unknown' ;;
+        *) WP2SHELL_LOG_BATCH_KEY='batch|other' ;;
     esac
     return 0
 }
@@ -670,7 +661,7 @@ detect_logs_classify_line() {
         timestamp=${timestamp:0:48}
     fi
     local index total category tier literal
-    local batch_tier='' lfi_seen=0
+    local batch_rank=0 lfi_seen=0
     total=${#WP2SHELL_LOG_PATTERN_LITERAL[@]}
     for ((index = 0; index < total; index++)); do
         literal=${WP2SHELL_LOG_PATTERN_LITERAL[index]}
@@ -687,7 +678,10 @@ detect_logs_classify_line() {
         tier=${WP2SHELL_LOG_PATTERN_TIER[index]}
         case $category in
             batch-endpoint)
-                batch_tier=$(detect_logs_higher_tier "$batch_tier" "$tier")
+                detect_logs_set_tier_rank "$tier"
+                if [ "$WP2SHELL_LOG_TIER_RANK" -gt "$batch_rank" ]; then
+                    batch_rank=$WP2SHELL_LOG_TIER_RANK
+                fi
                 ;;
             sqli)
                 if detect_logs_extract_parameter_value "$lowered" "$literal"; then
@@ -721,10 +715,10 @@ detect_logs_classify_line() {
             detect_logs_group_add "lfi|attempt" "$timestamp" "$working" "$source_file" "$status" ""
         fi
     fi
-    if [ -n "$batch_tier" ]; then
-        local batch_key
-        batch_key=$(detect_logs_batch_group_key "$batch_tier" "$status")
-        detect_logs_group_add "$batch_key" "$timestamp" "$working" "$source_file" "$status" ""
+    if [ "$batch_rank" -gt 0 ]; then
+        detect_logs_set_batch_group_key "$batch_rank" "$status"
+        detect_logs_group_add "$WP2SHELL_LOG_BATCH_KEY" "$timestamp" "$working" \
+            "$source_file" "$status" ""
     fi
     local client=${lowered%% *}
     local address ip_total
