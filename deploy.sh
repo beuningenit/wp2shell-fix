@@ -71,6 +71,23 @@ if ! command -v ssh >/dev/null 2>&1; then
     fail "ssh is niet beschikbaar"
 fi
 
+case $TARGET_PATH in
+    /*) ;;
+    *) fail "--path moet een absoluut pad zijn" ;;
+esac
+case $TARGET_PATH in
+    *[\'\"\\\ \$\`\;\&\|\<\>\(\)]*) fail "--path bevat tekens die niet zijn toegestaan" ;;
+esac
+case $TARGET_HOST in
+    *[\'\"\\\ \$\`\;\&\|\<\>\(\)]*) fail "--host bevat tekens die niet zijn toegestaan" ;;
+esac
+case $SSH_PORT in
+    ''|*[!0-9]*) fail "--port moet een getal zijn" ;;
+esac
+case $REPORT_EMAIL in
+    *[\'\"\\\ \$\`\;\&\|\<\>\(\)]*) fail "--email bevat tekens die niet zijn toegestaan" ;;
+esac
+
 SSH_TARGET="$SSH_USER@$TARGET_HOST"
 SSH_OPTIONS=(-p "$SSH_PORT" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
 

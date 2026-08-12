@@ -499,17 +499,17 @@ detect_logs_collect_server_files() {
     local unsorted="$WP2SHELL_LOG_WORK_DIR/candidates.raw"
     : > "$unsorted"
     : > "$destination"
-    local -a candidates=()
+    local -a server_candidates=()
     if [ -n "${WP2SHELL_SERVER_LOG_CANDIDATES+set}" ]; then
-        candidates=("${WP2SHELL_SERVER_LOG_CANDIDATES[@]}")
+        server_candidates=("${WP2SHELL_SERVER_LOG_CANDIDATES[@]}")
     fi
-    if [ "${#candidates[@]}" -eq 0 ]; then
-        candidates=(/usr/local/lsws/logs/access.log /usr/local/lsws/logs/error.log)
+    if [ "${#server_candidates[@]}" -eq 0 ]; then
+        server_candidates=(/usr/local/lsws/logs/access.log /usr/local/lsws/logs/error.log)
         log_debug "Geen serverlogs geconfigureerd, standaardkandidaten worden geprobeerd"
     fi
     local candidate directory stem listing status path
     listing="$WP2SHELL_LOG_WORK_DIR/listing"
-    for candidate in "${candidates[@]}"; do
+    for candidate in "${server_candidates[@]}"; do
         directory=${candidate%/*}
         stem=${candidate##*/}
         if [ -z "$directory" ] || [ "$directory" = "$candidate" ]; then

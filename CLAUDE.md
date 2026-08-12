@@ -34,6 +34,9 @@ commandoregel in `tools/lint.sh`, met deze motivering:
   ongebruikt maar worden door de andere modules geconsumeerd.
 - `SC2016`: strings met `$argv[1]` of `$wp_version` zijn PHP-broncode of een grep-patroon. Die mogen
   juist niet door Bash geexpandeerd worden.
+- `SC2029`: `deploy.sh` expandeert bewust aan de clientkant, want het doelpad is een lokale
+  variabele die voor verzending ingevuld moet worden. De invoer wordt eerst gevalideerd op
+  shell-metatekens.
 - `SC2329`: handlerfuncties worden indirect aangeroepen via een variabele, zodat elk subcommando
   dezelfde per-site isolatie gebruikt.
 - `SC2254`: allowlist-entries zijn bewust globs, geen letterlijke strings. `*@beuningenit.nl` en
