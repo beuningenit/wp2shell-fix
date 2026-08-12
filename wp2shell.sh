@@ -241,6 +241,13 @@ check_dependencies() {
     if [ "${WP2SHELL_HAS_JQ:-0}" != "1" ]; then
         log_debug "jq is niet aanwezig, er wordt teruggevallen op de ingebouwde JSON-verwerking"
     fi
+    if ! ensure_wp_cli; then
+        log_warn "WP-CLI is niet beschikbaar, de controles op database en core-integriteit worden overgeslagen"
+        WP2SHELL_WP_CLI_MISSING=1
+    else
+        WP2SHELL_WP_CLI_MISSING=0
+        log_debug "WP-CLI in gebruik: ${WP2SHELL_WP_CLI_RESOLVED:-}"
+    fi
     return 0
 }
 

@@ -119,6 +119,45 @@ quarantine_file() {
     return 0
 }
 
+quarantine_path() {
+    local site_path=$1 target=$2 reason=$3 confidence=${4:-$CONFIDENCE_HIGH} owner=${5:-}
+    if [ -L "$target" ]; then
+        log_warn "Overgeslagen, dit is een symlink en die wordt nooit verplaatst: $target"
+        return 1
+    fi
+    if [ -f "$target" ]; then
+        quarantine_file "$site_path" "$target" "$reason" "$confidence" "$owner"
+        return $?
+    fi
+    if [ ! -d "$target" ]; then
+        log_warn "Overgeslagen, dit is geen bestand of map: $target"
+        return 1
+    fi
+    if ! path_is_within "$target" "$site_path"; then
+        log_error "Overgeslagen, de map valt buiten de installatie: $target"
+        return 1
+    fi
+    local listing moved=0 failed=0 entry
+    listing=$(mktemp -t wp2shell-qdir.XXXXXXXX) || return 1
+    register_temp_cleanup "$listing"
+    "${WP2SHELL_FIND:-find}" -P "$target" -xdev -type f -print0 > "$listing" 2>/dev/null || true
+    while IFS= read -r -d '' entry; do
+        if quarantine_file "$site_path" "$entry" "$reason" "$confidence" "$owner"; then
+            moved=$((moved + 1))
+        else
+            failed=$((failed + 1))
+        fi
+    done < "$listing"
+    if [ "$moved" -gt 0 ] && [ "$failed" -eq 0 ]; then
+        rmdir -p -- "$target" 2>/dev/null || true
+    fi
+    log_info "Map in quarantaine: $target, $moved bestanden verplaatst, $failed overgeslagen"
+    if [ "$moved" -eq 0 ]; then
+        return 1
+    fi
+    return 0
+}
+
 quarantine_report_only() {
     local site_path=$1 file_path=$2 reason=$3
     log_info "Zou in quarantaine gaan bij --apply: $file_path"

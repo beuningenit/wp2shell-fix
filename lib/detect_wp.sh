@@ -15,7 +15,6 @@ WP2SHELL_DETECT_WP_PATTERNS_LOADED=0
 WP2SHELL_DETECT_WP_SIGNAL_SEVERITY=""
 WP2SHELL_DETECT_WP_SIGNAL_CONFIDENCE=""
 WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE=""
-WP2SHELL_DETECT_WP_SCOPE_NOTES=""
 
 declare -gA WP2SHELL_DETECT_WP_IOC_HASHES=()
 WP2SHELL_DETECT_WP_STRONG_PATTERNS=()
@@ -50,8 +49,6 @@ if [ -z "${WP2SHELL_SUSPECT_ADMIN_EMAIL_DOMAINS+x}" ]; then
     WP2SHELL_SUSPECT_ADMIN_EMAIL_DOMAINS=(
         "@wp2shell."
         "@shellcode."
-        ".shellcode.lol"
-        "@wp2shell.invalid"
     )
 fi
 
@@ -496,6 +493,10 @@ detect_wp_absolute_candidate() {
     fi
     if [ -e "$site_path/$raw" ]; then
         printf '%s' "$site_path/$raw"
+        return 0
+    fi
+    if [ -n "$plugins_dir" ]; then
+        printf '%s/%s' "$plugins_dir" "$raw"
         return 0
     fi
     printf '%s/%s' "$site_path" "$raw"
@@ -1501,6 +1502,14 @@ detect_wp_check_bridge_posts() {
         esac
         if [ -n "$snippet" ]; then
             detect_wp_evaluate_text_signals "$snippet"
+            case $snippet in
+                *'<?php'*|*'<?='*)
+                    if [ "$WP2SHELL_DETECT_WP_SIGNAL_CONFIDENCE" != "$CONFIDENCE_HIGH" ]; then
+                        WP2SHELL_DETECT_WP_SIGNAL_SEVERITY="$SEVERITY_HIGH"
+                        WP2SHELL_DETECT_WP_SIGNAL_EVIDENCE="PHP-code in een rij die alleen instellingen of externe HTML hoort te bevatten"
+                    fi
+                    ;;
+            esac
             if [ "$WP2SHELL_DETECT_WP_SIGNAL_SEVERITY" != "$SEVERITY_LOW" ]; then
                 if detect_wp_consume_item_budget; then
                     record_finding \
@@ -1702,7 +1711,6 @@ detect_wp_database_persistence() {
     WP2SHELL_DETECT_WP_DB_STATUS="uitgevoerd met prefix $prefix"
     detect_wp_check_autoloaded_options "$site_path" "$owner_user" "$prefix"
     detect_wp_check_site_urls "$site_path" "$owner_user" "$prefix" "$expected_domain"
-    detect_wp_check_active_plugins "$site_path" "$owner_user"
     detect_wp_check_bridge_posts "$site_path" "$owner_user" "$prefix"
     detect_wp_check_oembed_options "$site_path" "$owner_user" "$prefix"
     detect_wp_check_user_gaps "$site_path" "$owner_user" "$prefix"
@@ -1826,13 +1834,14 @@ detect_wp_config_file() {
 }
 
 detect_wp_config_constant_value() {
-    local config_file=$1 constant=$2 line trimmed value
+    local config_file=$1 constant=$2 line trimmed value pattern
     line=$(grep -m1 -E "define[[:space:]]*\([[:space:]]*['\"]${constant}['\"]" -- "$config_file" 2>/dev/null) || return 1
     trimmed=${line#"${line%%[![:space:]]*}"}
     case $trimmed in
         '//'*|'#'*|'*'*|'/*'*) return 1 ;;
     esac
-    if [[ $line =~ ['\"]${constant}['\"][[:space:]]*,[[:space:]]*([^\),\;]*) ]]; then
+    pattern="[\"']${constant}[\"'][[:space:]]*,[[:space:]]*([^),;]*)"
+    if [[ $line =~ $pattern ]]; then
         value=${BASH_REMATCH[1]}
         value=${value#"${value%%[![:space:]]*}"}
         value=${value%"${value##*[![:space:]]}"}
@@ -1861,17 +1870,17 @@ detect_wp_auto_update_posture() {
     fi
     if value=$(detect_wp_config_constant_value "$config_file" AUTOMATIC_UPDATER_DISABLED); then
         case $value in
-            true|1) blocking+=("AUTOMATIC_UPDATER_DISABLED staat op $value") ;;
+            true|1) blocking+=("AUTOMATIC_UPDATER_DISABLED op $value") ;;
         esac
     fi
     if value=$(detect_wp_config_constant_value "$config_file" DISALLOW_FILE_MODS); then
         case $value in
-            true|1) blocking+=("DISALLOW_FILE_MODS staat op $value") ;;
+            true|1) blocking+=("DISALLOW_FILE_MODS op $value") ;;
         esac
     fi
     if value=$(detect_wp_config_constant_value "$config_file" WP_AUTO_UPDATE_CORE); then
         case $value in
-            false|0) blocking+=("WP_AUTO_UPDATE_CORE staat op $value") ;;
+            false|0) blocking+=("WP_AUTO_UPDATE_CORE op $value") ;;
         esac
     fi
     if [ "${#blocking[@]}" -eq 0 ]; then
@@ -2008,11 +2017,11 @@ detect_wp_report_scan_scope() {
     local site_path=$1 cli_version=$2
     local expected=${WP2SHELL_EXPECTED_WP_CLI_VERSION:-2.12.0}
     local detail
-    detail="Uitgevoerde controles op deze installatie: core-integriteit (${WP2SHELL_DETECT_WP_CORE_STATUS:-niet uitgevoerd}), "
-    detail="$detail toegevoegd ${WP2SHELL_DETECT_WP_CORE_ADDED:-0}, gewijzigd ${WP2SHELL_DETECT_WP_CORE_MODIFIED:-0}, ontbrekend ${WP2SHELL_DETECT_WP_CORE_MISSING:-0}. "
-    detail="$detail Plugin-integriteit (${WP2SHELL_DETECT_WP_PLUGIN_STATUS:-niet uitgevoerd}), afwijkingen ${WP2SHELL_DETECT_WP_PLUGIN_ISSUES:-0}, niet geverifieerd ${WP2SHELL_DETECT_WP_PLUGIN_SKIPPED:-0}. "
-    detail="$detail Beheerders: ${WP2SHELL_DETECT_WP_ADMIN_TOTAL:-0} gevonden, ${WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW:-0} binnen het blootstellingsvenster. "
-    detail="$detail Databasecontroles: ${WP2SHELL_DETECT_WP_DB_STATUS:-niet uitgevoerd}. WP-CLI ${cli_version:-onbekend}. "
+    detail="Uitgevoerde controles op deze installatie: core-integriteit (${WP2SHELL_DETECT_WP_CORE_STATUS:-niet uitgevoerd}),"
+    detail="$detail toegevoegd ${WP2SHELL_DETECT_WP_CORE_ADDED:-0}, gewijzigd ${WP2SHELL_DETECT_WP_CORE_MODIFIED:-0}, ontbrekend ${WP2SHELL_DETECT_WP_CORE_MISSING:-0}."
+    detail="$detail Plugin-integriteit (${WP2SHELL_DETECT_WP_PLUGIN_STATUS:-niet uitgevoerd}), afwijkingen ${WP2SHELL_DETECT_WP_PLUGIN_ISSUES:-0}, niet geverifieerd ${WP2SHELL_DETECT_WP_PLUGIN_SKIPPED:-0}."
+    detail="$detail Beheerders: ${WP2SHELL_DETECT_WP_ADMIN_TOTAL:-0} gevonden, ${WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW:-0} binnen het blootstellingsvenster."
+    detail="$detail Databasecontroles: ${WP2SHELL_DETECT_WP_DB_STATUS:-niet uitgevoerd}. WP-CLI ${cli_version:-onbekend}."
     detail="$detail Buiten bereik van dit onderdeel: wp-content wordt door verify-checksums nooit gecontroleerd en voor themas bestaat geen checksumcommando. Geen bevinding hier betekent dus dat geen van deze controles is aangeslagen, niet dat de site schoon is."
     record_finding \
         "site=$site_path" \
@@ -2092,6 +2101,8 @@ detect_wp_for_site() {
         || log_warn "Themacontrole is voortijdig gestopt voor $site_path"
     detect_wp_administrator_accounts "$site_path" "$owner_user" \
         || log_warn "Beheerderscontrole is voortijdig gestopt voor $site_path"
+    detect_wp_check_active_plugins "$site_path" "$owner_user" \
+        || log_warn "Controle van actieve plugins is voortijdig gestopt voor $site_path"
     detect_wp_database_persistence "$site_path" "$owner_user" "$expected_domain" \
         || log_warn "Databasecontroles zijn voortijdig gestopt voor $site_path"
     detect_wp_scheduled_tasks "$site_path" "$owner_user" \

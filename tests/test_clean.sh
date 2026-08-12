@@ -57,9 +57,9 @@ write_finding() {
 }
 
 : > "$WP2SHELL_FINDINGS_FILE"
-write_finding "webshell-in-writable-dir" "$CONFIDENCE_HIGH" "$SITE/wp-content/uploads/shell.php"
+write_finding "php-in-writable-directory" "$CONFIDENCE_HIGH" "$SITE/wp-content/uploads/shell.php"
 write_finding "obfuscation" "$CONFIDENCE_HEURISTIC" "$SITE/wp-content/uploads/twijfel.php"
-write_finding "webshell-in-writable-dir" "$CONFIDENCE_HIGH" "$SITE/wp-content/uploads/maatwerk.php"
+write_finding "php-in-writable-directory" "$CONFIDENCE_HIGH" "$SITE/wp-content/uploads/maatwerk.php"
 
 WP2SHELL_ALLOWLIST_PATHS=("$SITE/wp-content/uploads/maatwerk.php")
 
@@ -78,7 +78,7 @@ expect_equal "het bestand op de allowlist blijft staan" "ja" \
 expect_equal "categorie zonder auto-actie wordt niet verplaatst" "nee" \
     "$(category_is_auto_quarantinable "obfuscation" && printf 'ja' || printf 'nee')"
 expect_equal "bekende kwaadaardige categorie is wel auto-actionable" "ja" \
-    "$(category_is_auto_quarantinable "malicious-hash" && printf 'ja' || printf 'nee')"
+    "$(category_is_auto_quarantinable "known-malware-hash" && printf 'ja' || printf 'nee')"
 
 BACKUP_SITE="$FIXTURE/site2"
 mkdir -p "$BACKUP_SITE/wp-content/uploads" "$BACKUP_SITE/wp-includes"
@@ -88,7 +88,7 @@ record_finding \
     "site=$BACKUP_SITE" \
     "severity=$SEVERITY_CRITICAL" \
     "confidence=$CONFIDENCE_HIGH" \
-    "category=webshell-in-writable-dir" \
+    "category=php-in-writable-directory" \
     "title=testbevinding" \
     "detail=test" \
     "file=$BACKUP_SITE/wp-content/uploads/shell2.php"
@@ -101,6 +101,24 @@ expect_equal "er is niets opgeschoond zonder geslaagde backup" "ja" \
     "$([ -f "$BACKUP_SITE/wp-content/uploads/shell2.php" ] && printf 'ja' || printf 'nee')"
 expect_equal "de mislukte backup is gerapporteerd" "1" \
     "$("${WP2SHELL_GREP:-grep}" -c 'backup-failed' "$WP2SHELL_FINDINGS_FILE" || true)"
+
+EMITTED=$(mktemp)
+"${WP2SHELL_GREP:-grep}" -ohE '"category=[a-z0-9-]+"' "$REPO_ROOT"/lib/detect_*.sh \
+    | sed 's/"category=//; s/"//' | sort -u > "$EMITTED"
+
+for category in "${WP2SHELL_AUTO_QUARANTINE_CATEGORIES[@]}"; do
+    if [ "$category" = "core-extra-file" ]; then
+        continue
+    fi
+    tests_run=$((tests_run + 1))
+    if "${WP2SHELL_GREP:-grep}" -qx "$category" "$EMITTED"; then
+        printf 'ok   auto-quarantaine categorie %s wordt echt uitgegeven\n' "$category"
+    else
+        printf 'FAIL categorie %s staat in de auto-quarantainelijst maar geen enkele detectiemodule geeft die uit\n' "$category" >&2
+        tests_failed=$((tests_failed + 1))
+    fi
+done
+rm -f -- "$EMITTED"
 
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then

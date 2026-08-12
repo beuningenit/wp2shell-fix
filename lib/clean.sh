@@ -1,12 +1,14 @@
 WP2SHELL_CLEAN_LOADED=1
 
 WP2SHELL_AUTO_QUARANTINE_CATEGORIES=(
-    "malicious-hash"
-    "webshell-in-writable-dir"
-    "malicious-plugin"
+    "known-malware-hash"
+    "php-in-writable-directory"
+    "minimal-backdoor"
+    "malicious-plugin-structure"
+    "wp2shell-rest-namespace"
+    "backdoor-pattern"
+    "user-ini-auto-prepend"
     "core-extra-file"
-    "one-liner-backdoor"
-    "rest-command-execution"
 )
 
 category_is_auto_quarantinable() {
@@ -17,6 +19,32 @@ category_is_auto_quarantinable() {
         fi
     done
     return 1
+}
+
+plugin_slug_from_path() {
+    local site_path=$1 candidate=$2
+    if [ -z "$candidate" ]; then
+        return 1
+    fi
+    local plugins_root="$site_path/wp-content/plugins/"
+    case $candidate in
+        "$plugins_root"*)
+            local remainder=${candidate#"$plugins_root"}
+            printf '%s' "${remainder%%/*}"
+            return 0
+            ;;
+    esac
+    return 1
+}
+
+admin_field_from_evidence() {
+    local evidence=$1 field=$2
+    local remainder=${evidence#*"$field" }
+    if [ "$remainder" = "$evidence" ]; then
+        return 1
+    fi
+    printf '%s' "${remainder%%,*}"
+    return 0
 }
 
 maintenance_mode_activate() {
@@ -78,7 +106,7 @@ quarantine_findings_for_site() {
             proposed=$((proposed + 1))
             continue
         fi
-        if quarantine_file "$site_path" "$file_path" "$category" "$CONFIDENCE_HIGH" "$owner_user"; then
+        if quarantine_path "$site_path" "$file_path" "$category" "$CONFIDENCE_HIGH" "$owner_user"; then
             quarantined=$((quarantined + 1))
         fi
     done < "$snapshot"
@@ -160,11 +188,15 @@ deactivate_malicious_plugins() {
         fi
         category=$(json_extract_field "$line" category) || category=''
         confidence=$(json_extract_field "$line" confidence) || confidence=''
-        if [ "$category" != "malicious-plugin" ] || [ "$confidence" != "$CONFIDENCE_HIGH" ]; then
+        case $category in
+            malicious-plugin-structure|wp2shell-rest-namespace|suspicious-plugin-name) ;;
+            *) continue ;;
+        esac
+        if [ "$confidence" != "$CONFIDENCE_HIGH" ]; then
             continue
         fi
-        evidence=$(json_extract_field "$line" evidence) || evidence=''
-        slug=${evidence%% *}
+        evidence=$(json_extract_field "$line" file_path) || evidence=''
+        slug=$(plugin_slug_from_path "$site_path" "$evidence") || slug=''
         if [ -z "$slug" ]; then
             continue
         fi
@@ -202,13 +234,12 @@ handle_rogue_administrators() {
         fi
         category=$(json_extract_field "$line" category) || category=''
         case $category in
-            rogue-administrator|suspicious-administrator) ;;
+            admin-created-in-exposure-window|admin-not-allowlisted) ;;
             *) continue ;;
         esac
         evidence=$(json_extract_field "$line" evidence) || evidence=''
-        user_id=${evidence%%:*}
-        login=${evidence#*:}
-        login=${login%% *}
+        user_id=$(admin_field_from_evidence "$evidence" "ID")
+        login=$(admin_field_from_evidence "$evidence" "login")
         case $user_id in
             ''|*[!0-9]*) continue ;;
         esac
@@ -333,8 +364,8 @@ clean_site() {
         fi
     fi
     restore_core_for_site "$site_path" "$owner_user" "$apply" "$target_version" || true
-    quarantine_findings_for_site "$site_path" "$owner_user" "$apply" || true
     deactivate_malicious_plugins "$site_path" "$owner_user" "$apply" || true
+    quarantine_findings_for_site "$site_path" "$owner_user" "$apply" || true
     handle_rogue_administrators "$site_path" "$owner_user" "$apply" "$remove_admins" || true
     clean_injected_configuration "$site_path" "$apply" || true
     if [ "$apply" = "1" ] && [ "$maintenance" = "1" ]; then

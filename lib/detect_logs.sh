@@ -827,6 +827,10 @@ detect_logs_version_carries_batch_route_flaw() {
 }
 
 detect_logs_version_sentence() {
+    if [ "$WP2SHELL_LOG_CATEGORY_PREFIX" = "serverlog" ]; then
+        printf 'Deze bron hoort niet bij een enkele installatie, dus dit signaal kon niet tegen een WordPress-versie gewogen worden.'
+        return 0
+    fi
     if [ -z "$WP2SHELL_LOG_SITE_VERSION" ]; then
         printf 'De WordPress-versie kon niet van schijf gelezen worden, dus dit signaal kon niet tegen de versie gewogen worden.'
         return 0
@@ -911,7 +915,11 @@ detect_logs_emit_batch_finding() {
             if detect_logs_version_carries_batch_route_flaw; then
                 severity=$SEVERITY_CRITICAL
                 confidence=$CONFIDENCE_HIGH
-                title='Geslaagd batch-verzoek met status 200 op een kwetsbare versie'
+                if [ "$WP2SHELL_LOG_SITE_STATUS" = "rce-vulnerable" ]; then
+                    title='Geslaagd batch-verzoek met status 200 op een kwetsbare versie'
+                else
+                    title='Geslaagd batch-verzoek met status 200, versie niet vast te stellen'
+                fi
             else
                 severity=$SEVERITY_HIGH
                 confidence=$CONFIDENCE_HEURISTIC
@@ -1196,8 +1204,8 @@ detect_logs_emit_source_findings() {
             "confidence=$CONFIDENCE_HIGH" \
             "category=$WP2SHELL_LOG_CATEGORY_PREFIX-missing" \
             "title=Geen webserverlogs gevonden voor $subject" \
-            "detail=Er is geen enkel logbestand gevonden of gelezen voor $subject. Zonder logs kan niet vastgesteld worden of deze installatie is aangevallen. Het ontbreken van logs is dus geen aanwijzing dat de site schoon is. Geprobeerde locaties: $probed" \
-            "remediation=Controleer waar de webserver voor dit domein logt, controleer of de scan als root draait, en verleng zo nodig de bewaartermijn van de logrotatie."
+            "detail=Er is geen enkel logbestand gevonden of gelezen voor $subject. Zonder logs kan uit deze bron niet vastgesteld worden of er misbruik heeft plaatsgevonden. Het ontbreken van loghistorie is dus geen aanwijzing dat er niets gebeurd is. Geprobeerde locaties: $probed" \
+            "remediation=Controleer waar de webserver voor deze bron logt, controleer of de scan als root draait, en verleng zo nodig de bewaartermijn van de logrotatie."
     else
         record_finding \
             "site=$site_path" \

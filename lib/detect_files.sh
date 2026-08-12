@@ -209,13 +209,19 @@ detect_files_sha256_tool() {
     return 0
 }
 
+detect_files_strip_checksum_escape() {
+    local value=$1
+    printf '%s' "${value#\\}"
+    return 0
+}
+
 file_sha256() {
     local target=$1 tool output
     tool=$(detect_files_sha256_tool)
     case $tool in
         sha256sum)
             output=$(sha256sum -- "$target" 2>/dev/null) || return 1
-            printf '%s' "${output%% *}"
+            detect_files_strip_checksum_escape "${output%% *}"
             return 0
             ;;
         openssl)
@@ -584,9 +590,16 @@ detect_files_compute_hashes() {
     local candidate=$1
     WP2SHELL_DETECT_FILES_CURRENT_SHA1=$(file_sha1 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
     WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_CURRENT_SHA1,,}
+    WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_CURRENT_SHA1#\\}
+    if [ "${#WP2SHELL_DETECT_FILES_CURRENT_SHA1}" -ne 40 ]; then
+        WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
+    fi
     if [ "${#WP2SHELL_FILE_IOC_SHA256[@]}" -gt 0 ]; then
         WP2SHELL_DETECT_FILES_CURRENT_SHA256=$(file_sha256 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
         WP2SHELL_DETECT_FILES_CURRENT_SHA256=${WP2SHELL_DETECT_FILES_CURRENT_SHA256,,}
+        if [ "${#WP2SHELL_DETECT_FILES_CURRENT_SHA256}" -ne 64 ]; then
+            WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
+        fi
     fi
     return 0
 }
