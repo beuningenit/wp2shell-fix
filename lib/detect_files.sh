@@ -813,7 +813,7 @@ detect_files_scan_file_content() {
     local literal category confidence
     local high_count=0 medium_count=0
     local has_backdoor=0 has_open_rest=0 has_sink=0 has_decode=0 has_namespace=0 has_fake_author=0
-    local strongest_literal='' backdoor_literal=''
+    local strongest_literal='' backdoor_literal='' medium_literal=''
     while IFS= read -r literal; do
         if [ -z "$literal" ]; then
             continue
@@ -822,8 +822,15 @@ detect_files_scan_file_content() {
         confidence=${WP2SHELL_FILE_IOC_PATTERN_CONFIDENCE["$literal"]:-low}
         detect_files_note_signal "patroon $literal"
         case $confidence in
-            high) high_count=$((high_count + 1)) ;;
-            medium) medium_count=$((medium_count + 1)) ;;
+            high)
+                high_count=$((high_count + 1))
+                ;;
+            medium)
+                medium_count=$((medium_count + 1))
+                if [ -z "$medium_literal" ]; then
+                    medium_literal="$literal"
+                fi
+                ;;
         esac
         case $category in
             backdoor)
@@ -856,6 +863,7 @@ detect_files_scan_file_content() {
             "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
             "evidence=$(detect_files_first_match_line "$candidate" 'morning/v1')" \
             "remediation=Zet dit bestand of de bijbehorende pluginmap in quarantaine en behandel de installatie als gecompromitteerd."
+        high_count=$((high_count - 1))
     fi
     if [ "$has_fake_author" = "1" ]; then
         record_finding \
@@ -869,6 +877,7 @@ detect_files_scan_file_content() {
             "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
             "evidence=$(detect_files_first_match_line "$candidate" 'Author: WordPress.org Community')" \
             "remediation=Vergelijk deze plugin met de officiele versie of verwijder hem als hij daar niet voorkomt."
+        medium_count=$((medium_count - 1))
     fi
     detect_files_track_plugin_structure "$site_path" "$relative" "$candidate" \
         "$has_open_rest" "$has_sink" "$has_decode"
@@ -905,7 +914,7 @@ detect_files_scan_file_content() {
             "detail=Er zijn $WP2SHELL_DETECT_FILES_SIGNAL_COUNT signalen geteld: $(detect_files_signal_summary). Elk signaal afzonderlijk komt ook in legitieme plugins voor, de combinatie verdient handmatige review. Er wordt hier bewust niets als bevestigd gemeld." \
             "file=$candidate" \
             "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
-            "evidence=$(detect_files_first_match_line "$candidate" "$literal")" \
+            "evidence=$(detect_files_first_match_line "$candidate" "$medium_literal")" \
             "remediation=Bekijk dit bestand handmatig en vergelijk het met de originele broncode van de plugin of het thema."
     fi
     return 0
@@ -951,7 +960,7 @@ detect_files_report_htaccess() {
             "evidence=$(detect_files_evidence_snippet "$line")" \
             "remediation=Controleer waar deze omleiding naartoe wijst en of de beheerder hem zelf heeft aangebracht."
     fi
-    if line=$(grep -E -i -n -m1 -e '(AddType|AddHandler|SetHandler|php_flag[[:space:]]+engine|php_value)[^[:cntrl:]]*php' -- "$candidate" 2>/dev/null); then
+    if line=$(grep -E -i -n -m1 -e '^[[:space:]]*(AddType|AddHandler|SetHandler)[^[:cntrl:]]*php|^[[:space:]]*php_flag[[:space:]]+engine[[:space:]]+on' -- "$candidate" 2>/dev/null); then
         record_finding \
             "site=$site_path" \
             "severity=$SEVERITY_HIGH" \
