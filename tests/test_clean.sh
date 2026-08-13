@@ -121,6 +121,9 @@ for category in "${WP2SHELL_AUTO_QUARANTINE_CATEGORIES[@]}"; do
 done
 rm -f -- "$EMITTED"
 
+STRUCTURE_REPORT=$(php "$REPO_ROOT/tools/check_completion_markers.php" "$REPO_ROOT/lib/detect_wp.sh")
+expect_equal "elk afgehandeld returnpad meldt zich af als voltooid" "" "$STRUCTURE_REPORT"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
