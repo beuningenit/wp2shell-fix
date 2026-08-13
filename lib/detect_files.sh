@@ -13,6 +13,7 @@ WP2SHELL_DETECT_FILES_SHA256_TOOL=""
 WP2SHELL_DETECT_FILES_SIGNAL_COUNT=0
 WP2SHELL_DETECT_FILES_SIGNAL_LABELS=()
 WP2SHELL_DETECT_FILES_OVERSIZED=()
+WP2SHELL_DETECT_FILES_NAME_REASON=""
 WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
 WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
 WP2SHELL_DETECT_FILES_HIGH_REPORTED=0
@@ -339,6 +340,36 @@ detect_files_size_profile_label() {
     return 1
 }
 
+detect_files_set_suspicious_name_reason() {
+    WP2SHELL_DETECT_FILES_NAME_REASON=""
+    local name=$1
+    local lower=${name,,}
+    case $lower in
+        cmsmap|cmsmap[-_.]*|*[-_.]cmsmap)
+            printf 'CMSmap is een losstaande pentesttool en geen WordPress-plugin, een plugin of bestand met deze naam hoort hier niet'
+            return 0
+            ;;
+    esac
+    if [[ $lower =~ ^wp2shell[-_][0-9a-f]{6,}(\.[a-z0-9]+)?$ ]]; then
+        printf 'de naam volgt het waargenomen sjabloon wp2shell met een hexadecimaal achtervoegsel'
+        return 0
+    fi
+    case $lower in
+        *wp2shell*)
+            printf 'de naam bevat wp2shell, de aanduiding van deze campagne'
+            return 0
+            ;;
+        gg-*)
+            printf 'de gg prefix is waargenomen bij plugins die via wp2shell zijn geplaatst'
+            return 0
+            ;;
+        temp-write-test-*)
+            printf 'dit is een schrijftest, aanvallers gebruiken die om te controleren of een map beschrijfbaar is, maar WordPress zelf laat bij een afgebroken update ook zulke bestanden achter'
+            return 0
+            ;;
+    esac
+    return 1
+}
 detect_files_suspicious_name_reason() {
     local name=$1
     local lower=${name,,}
@@ -863,9 +894,10 @@ detect_files_report_suspicious_name() {
     local site_path=$1 relative=$2 candidate=$3 size=$4
     local base=${candidate##*/}
     local reason=''
-    if ! reason=$(detect_files_suspicious_name_reason "$base"); then
+    if ! detect_files_set_suspicious_name_reason "$base"; then
         return 0
     fi
+    reason="$WP2SHELL_DETECT_FILES_NAME_REASON"
     detect_files_note_signal "verdachte bestandsnaam"
     local size_note=''
     if size_note=$(detect_files_size_profile_label "$size"); then
