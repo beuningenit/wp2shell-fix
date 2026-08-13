@@ -165,6 +165,41 @@ quarantine_report_only() {
     return 0
 }
 
+preview_restore_from_manifest() {
+    local manifest=$1 selector=${2:-}
+    if [ ! -s "$manifest" ]; then
+        log_error "Geen manifest gevonden: $manifest"
+        return 1
+    fi
+    local line original stored candidates=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        original=$(json_extract_field "$line" original_path) || original=''
+        stored=$(json_extract_field "$line" stored_path) || stored=''
+        if [ -z "$original" ] || [ -z "$stored" ]; then
+            continue
+        fi
+        if [ -n "$selector" ]; then
+            case $original in
+                *"$selector"*) ;;
+                *) continue ;;
+            esac
+        fi
+        if [ ! -f "$stored" ]; then
+            continue
+        fi
+        if [ -e "$original" ]; then
+            continue
+        fi
+        candidates=$((candidates + 1))
+        log_info "Zou terugzetten: $original"
+    done < "$manifest"
+    log_info "$candidates bestanden zouden teruggezet worden uit dit manifest"
+    return 0
+}
+
 restore_from_manifest() {
     local manifest=$1 selector=${2:-}
     if [ ! -s "$manifest" ]; then

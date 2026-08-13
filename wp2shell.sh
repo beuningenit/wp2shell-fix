@@ -43,7 +43,7 @@ Subcommando's:
   clean      Opschonen van besmette installaties. Doet niets zonder --apply.
   harden     Preventie toepassen. Wijzigende stappen alleen met --apply.
   report     Laatste resultaten opnieuw renderen en optioneel mailen.
-  restore    Zet bestanden uit quarantaine terug op hun oorspronkelijke plek.
+  restore    Zet bestanden uit quarantaine terug. Doet niets zonder --apply.
 
 Opties:
   --apply                 Schakel wijzigende acties in. Zonder deze vlag wordt niets gewijzigd.
@@ -79,7 +79,8 @@ Voorbeelden:
   wp2shell.sh clean --site /home/klant/domains/voorbeeld.nl/public_html --apply
   wp2shell.sh harden --apply
   wp2shell.sh restore --run-id 20260813-090000-1234
-  wp2shell.sh restore --run-id 20260813-090000-1234 --filter wp-content/uploads
+  wp2shell.sh restore --run-id 20260813-090000-1234 --apply
+  wp2shell.sh restore --run-id 20260813-090000-1234 --filter wp-content/uploads --apply
 USAGE
 }
 
@@ -175,6 +176,9 @@ validate_arguments() {
         log_error "restore vereist --run-id van de run waarin de bestanden in quarantaine zijn gezet"
         exit "$EXIT_USAGE"
     fi
+    if [ "$OPT_SUBCOMMAND" = "restore" ] && [ "$OPT_APPLY" != "1" ]; then
+        log_warn "restore zet bestanden terug in de live site, dat vereist --apply"
+    fi
     if [ -n "$OPT_FILTER" ] && [ "$OPT_SUBCOMMAND" != "restore" ]; then
         log_error "--filter hoort bij restore"
         exit "$EXIT_USAGE"
@@ -241,8 +245,12 @@ setup_run_environment() {
     WP2SHELL_SITES_FILE="$WP2SHELL_RUN_DIR/sites.ndjson"
     WP2SHELL_REPORT_JSON="$WP2SHELL_RUN_DIR/report.json"
     WP2SHELL_REPORT_TEXT="$WP2SHELL_RUN_DIR/samenvatting.txt"
-    : > "$WP2SHELL_FINDINGS_FILE"
-    : > "$WP2SHELL_SITES_FILE"
+    if [ ! -e "$WP2SHELL_FINDINGS_FILE" ]; then
+        : > "$WP2SHELL_FINDINGS_FILE"
+    fi
+    if [ ! -e "$WP2SHELL_SITES_FILE" ]; then
+        : > "$WP2SHELL_SITES_FILE"
+    fi
     WP2SHELL_STARTED_AT=$(timestamp_iso)
     return 0
 }
@@ -667,11 +675,20 @@ command_restore() {
     local manifest failures=0 handled=0
     while IFS= read -r -d '' manifest; do
         handled=$((handled + 1))
+        if [ "$OPT_APPLY" != "1" ]; then
+            log_info "Zou terugzetten uit $manifest"
+            preview_restore_from_manifest "$manifest" "$OPT_FILTER"
+            continue
+        fi
         log_info "Terugzetten uit $manifest"
         if ! restore_from_manifest "$manifest" "$OPT_FILTER"; then
             failures=$((failures + 1))
         fi
     done < "$manifests"
+    if [ "$OPT_APPLY" != "1" ]; then
+        log_info "$handled manifesten bekeken, er is niets teruggezet omdat --apply ontbreekt"
+        return 0
+    fi
     log_info "$handled manifesten verwerkt, $failures met fouten"
     if [ "$failures" -gt 0 ]; then
         return "$EXIT_INTERNAL"

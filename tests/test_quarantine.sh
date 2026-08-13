@@ -164,6 +164,20 @@ expect_equal "zonder filter komt de rest ook terug" "ja" \
 
 expect_success "opnieuw terugzetten geeft geen fout" restore_from_manifest "$FILTER_MANIFEST"
 
+PREVIEW_SITE="$FIXTURE/previewsite"
+mkdir -p "$PREVIEW_SITE/wp-content/uploads"
+printf '<?php drie\n' > "$PREVIEW_SITE/wp-content/uploads/drie.php"
+quarantine_file "$PREVIEW_SITE" "$PREVIEW_SITE/wp-content/uploads/drie.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+PREVIEW_MANIFEST=$(quarantine_manifest_path "$PREVIEW_SITE")
+
+expect_success "vooruitblik op terugzetten werkt" preview_restore_from_manifest "$PREVIEW_MANIFEST"
+expect_equal "de vooruitblik zet niets terug" "nee" \
+    "$([ -f "$PREVIEW_SITE/wp-content/uploads/drie.php" ] && printf 'ja' || printf 'nee')"
+
+restore_from_manifest "$PREVIEW_MANIFEST" >/dev/null 2>&1
+expect_equal "daarna zet terugzetten het wel terug" "ja" \
+    "$([ -f "$PREVIEW_SITE/wp-content/uploads/drie.php" ] && printf 'ja' || printf 'nee')"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
