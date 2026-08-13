@@ -1035,13 +1035,21 @@ detect_logs_group_has_success_status() {
     if [ -z "$statuses" ]; then
         return 2
     fi
-    local status
+    local status saw_server_error=0 saw_client_rejection=0
     for status in $statuses; do
         case $status in
             2??|3??) return 0 ;;
+            5??) saw_server_error=1 ;;
+            4??) saw_client_rejection=1 ;;
         esac
     done
-    return 1
+    if [ "$saw_server_error" = "1" ]; then
+        return 3
+    fi
+    if [ "$saw_client_rejection" = "1" ]; then
+        return 1
+    fi
+    return 2
 }
 
 detect_logs_emit_sqli_finding() {
@@ -1064,8 +1072,13 @@ detect_logs_emit_sqli_finding() {
         severity="$SEVERITY_LOW"
         confidence="$CONFIDENCE_HEURISTIC"
         title="Afgewezen SQL-injectiepoging via de parameter $parameter"
-        detail="$detail Alle betrokken verzoeken kregen een foutstatus terug, dus de server heeft ze afgewezen. Dat wijst op aftasten door een scanner en niet op een geslaagde injectie."
+        detail="$detail Alle betrokken verzoeken kregen een 4xx terug, dus de server heeft ze afgewezen voordat de kwetsbare code eraan toekwam. Dat wijst op aftasten door een scanner en niet op een geslaagde injectie."
         remediation="Geen directe actie nodig zolang de installatie gepatcht is. Controleer wel of er andere sporen zijn."
+    elif [ "$status_verdict" = "3" ]; then
+        confidence="$CONFIDENCE_HEURISTIC"
+        title="SQL-injectiepoging via de parameter $parameter met een serverfout tot gevolg"
+        detail="$detail De betrokken verzoeken kregen een 5xx terug. Dat is geen afwijzing: een serverfout betekent juist dat de aanvraag tot in de code is gekomen en daar is vastgelopen, wat bij een injectiepoging het gevolg kan zijn van de meegestuurde payload zelf. Behandel dit als een serieus signaal en niet als ruis."
+        remediation="Zoek de bijbehorende PHP-fout in het errorlog op, controleer of de installatie gepatcht is, en beoordeel de betrokken bestanden en accounts."
     elif [ "$status_verdict" = "2" ]; then
         confidence="$CONFIDENCE_HEURISTIC"
         detail="$detail In deze logregels staat geen statuscode, dus of het verzoek geslaagd is valt hier niet uit af te leiden."
@@ -1107,8 +1120,13 @@ detect_logs_emit_lfi_finding() {
             severity=$SEVERITY_LOW
             confidence="$CONFIDENCE_HEURISTIC"
             title='Afgewezen poging tot uitlezen van wp-config.php'
-            detail="$detail Alle betrokken verzoeken kregen een foutstatus terug, dus de server heeft ze afgewezen. Dat wijst op aftasten door een scanner en niet op een geslaagd uitlezen."
+            detail="$detail Alle betrokken verzoeken kregen een 4xx terug, dus de server heeft ze afgewezen voordat de kwetsbare code eraan toekwam. Dat wijst op aftasten door een scanner en niet op een geslaagd uitlezen."
             remediation="Geen directe actie nodig. Rotatie van gegevens is hier niet aan de orde zolang er geen geslaagd verzoek is."
+        elif [ "$status_verdict" = "3" ]; then
+            confidence="$CONFIDENCE_HEURISTIC"
+            title='Poging tot uitlezen van wp-config.php met een serverfout tot gevolg'
+            detail="$detail De betrokken verzoeken kregen een 5xx terug. Dat is geen afwijzing: de aanvraag is tot in de code gekomen en daar vastgelopen, wat bij padtraversal het gevolg kan zijn van het gevraagde bestand zelf. Ga er niet vanuit dat er niets gelezen is."
+            remediation="Zoek de bijbehorende PHP-fout in het errorlog op en beoordeel of wp-config.php uitgelezen kan zijn. Roteer bij twijfel het databasewachtwoord en alle salts."
         elif [ "$status_verdict" = "2" ]; then
             confidence="$CONFIDENCE_HEURISTIC"
             detail="$detail In deze logregels staat geen statuscode, dus of het verzoek geslaagd is valt hier niet uit af te leiden."
