@@ -181,7 +181,7 @@ detect_files_report_ioc_gap() {
 detect_files_is_php_candidate() {
     local lower=${1,,}
     case $lower in
-        *.php|*.phtml|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar|*.inc) return 0 ;;
+        *.php|*.phtml|*.pht|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar|*.inc) return 0 ;;
     esac
     return 1
 }
@@ -189,7 +189,7 @@ detect_files_is_php_candidate() {
 detect_files_is_executable_php_name() {
     local lower=${1,,}
     case $lower in
-        *.php|*.phtml|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar) return 0 ;;
+        *.php|*.phtml|*.pht|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar) return 0 ;;
     esac
     return 1
 }
@@ -422,6 +422,7 @@ detect_files_build_name_arguments() {
         -o -iname '*.php7'
         -o -iname '*.php8'
         -o -iname '*.phps'
+        -o -iname '*.pht'
         -o -iname '*.phar'
         -o -iname '*.inc'
         -o -iname '*.zip'

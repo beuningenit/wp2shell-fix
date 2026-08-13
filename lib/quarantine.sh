@@ -171,7 +171,7 @@ restore_from_manifest() {
         log_error "Geen manifest gevonden: $manifest"
         return 1
     fi
-    local line original stored restored_count=0 failed_count=0
+    local line original stored restored_count=0 failed_count=0 skipped_count=0
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -181,17 +181,25 @@ restore_from_manifest() {
         if [ -z "$original" ] || [ -z "$stored" ]; then
             continue
         fi
-        if [ -n "$selector" ] && [ "$original" != "$selector" ]; then
-            continue
+        if [ -n "$selector" ]; then
+            case $original in
+                *"$selector"*) ;;
+                *) continue ;;
+            esac
         fi
         if [ ! -f "$stored" ]; then
-            log_warn "Het bestand in quarantaine ontbreekt: $stored"
-            failed_count=$((failed_count + 1))
+            if [ -e "$original" ]; then
+                log_info "Stond al terug op de oorspronkelijke plek: $original"
+                skipped_count=$((skipped_count + 1))
+            else
+                log_warn "Het bestand in quarantaine ontbreekt en staat ook niet terug: $stored"
+                failed_count=$((failed_count + 1))
+            fi
             continue
         fi
         if [ -e "$original" ]; then
-            log_warn "Overgeslagen, op de oorspronkelijke plek staat alweer een bestand: $original"
-            failed_count=$((failed_count + 1))
+            log_info "Overgeslagen, er staat al een bestand op deze plek: $original"
+            skipped_count=$((skipped_count + 1))
             continue
         fi
         if ! mkdir -p -- "$(dirname -- "$original")"; then
@@ -208,7 +216,7 @@ restore_from_manifest() {
             failed_count=$((failed_count + 1))
         fi
     done < "$manifest"
-    log_info "Terugzetten afgerond, $restored_count hersteld, $failed_count mislukt"
+    log_info "Terugzetten afgerond, $restored_count hersteld, $skipped_count overgeslagen, $failed_count mislukt"
     if [ "$failed_count" -gt 0 ]; then
         return 1
     fi

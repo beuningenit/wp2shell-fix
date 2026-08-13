@@ -144,6 +144,26 @@ expect_failure "een dump zonder CREATE TABLE wordt afgekeurd" verify_database_du
 printf 'CREATE TABLE wp_posts (id int);\n' > "$FIXTURE/goed.sql"
 expect_success "een geldige dump wordt geaccepteerd" verify_database_dump "$FIXTURE/goed.sql"
 
+FILTER_SITE="$FIXTURE/filtersite"
+mkdir -p "$FILTER_SITE/wp-content/uploads" "$FILTER_SITE/wp-content/cache"
+printf '<?php een\n' > "$FILTER_SITE/wp-content/uploads/een.php"
+printf '<?php twee\n' > "$FILTER_SITE/wp-content/cache/twee.php"
+quarantine_file "$FILTER_SITE" "$FILTER_SITE/wp-content/uploads/een.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+quarantine_file "$FILTER_SITE" "$FILTER_SITE/wp-content/cache/twee.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+FILTER_MANIFEST=$(quarantine_manifest_path "$FILTER_SITE")
+
+restore_from_manifest "$FILTER_MANIFEST" "wp-content/uploads" >/dev/null 2>&1
+expect_equal "filter zet alleen het gefilterde bestand terug" "ja" \
+    "$([ -f "$FILTER_SITE/wp-content/uploads/een.php" ] && printf 'ja' || printf 'nee')"
+expect_equal "filter laat het andere bestand in quarantaine" "nee" \
+    "$([ -f "$FILTER_SITE/wp-content/cache/twee.php" ] && printf 'ja' || printf 'nee')"
+
+restore_from_manifest "$FILTER_MANIFEST" >/dev/null 2>&1
+expect_equal "zonder filter komt de rest ook terug" "ja" \
+    "$([ -f "$FILTER_SITE/wp-content/cache/twee.php" ] && printf 'ja' || printf 'nee')"
+
+expect_success "opnieuw terugzetten geeft geen fout" restore_from_manifest "$FILTER_MANIFEST"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
