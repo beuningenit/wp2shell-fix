@@ -541,9 +541,34 @@ detect_wp_path_is_executable_php() {
     return 1
 }
 
+detect_wp_memo_reset() {
+    local dir=${WP2SHELL_DETECT_WP_WORK_DIR:-}
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+        rm -f -- "$dir"/memo.* 2>/dev/null || true
+    fi
+    return 0
+}
+
+detect_wp_memoized_wp_run() {
+    local key=$1 owner_user=$2 site_path=$3
+    shift 3
+    local store raw
+    store=$(detect_wp_work_file "memo.$key") || store=''
+    if [ -n "$store" ] && [ -e "$store" ]; then
+        cat -- "$store" 2>/dev/null
+        return 0
+    fi
+    raw=$(wp_run "$owner_user" "$site_path" "$@" 2>/dev/null) || raw=''
+    if [ -n "$store" ]; then
+        printf '%s' "$raw" > "$store" 2>/dev/null || true
+    fi
+    printf '%s' "$raw"
+    return 0
+}
+
 detect_wp_cli_version() {
     local site_path=$1 owner_user=$2 raw
-    raw=$(wp_run "$owner_user" "$site_path" cli version 2>/dev/null) || raw=''
+    raw=$(detect_wp_memoized_wp_run cli-version "$owner_user" "$site_path" cli version)
     raw=${raw%%$'\n'*}
     raw=${raw#WP-CLI }
     raw=${raw// /}
@@ -556,7 +581,7 @@ detect_wp_cli_version() {
 
 detect_wp_core_version() {
     local site_path=$1 owner_user=$2 raw
-    raw=$(wp_run "$owner_user" "$site_path" core version 2>/dev/null) || raw=''
+    raw=$(detect_wp_memoized_wp_run core-version "$owner_user" "$site_path" core version)
     raw=${raw%%$'\n'*}
     raw=${raw// /}
     case $raw in
@@ -569,7 +594,7 @@ detect_wp_core_version() {
 
 detect_wp_site_locale() {
     local site_path=$1 owner_user=$2 raw
-    raw=$(wp_run "$owner_user" "$site_path" option get WPLANG 2>/dev/null) || raw=''
+    raw=$(detect_wp_memoized_wp_run wplang "$owner_user" "$site_path" option get WPLANG)
     raw=${raw%%$'\n'*}
     raw=${raw// /}
     case $raw in
@@ -582,7 +607,7 @@ detect_wp_site_locale() {
 
 detect_wp_plugins_directory() {
     local site_path=$1 owner_user=$2 value
-    value=$(wp_run "$owner_user" "$site_path" plugin path 2>/dev/null) || value=''
+    value=$(detect_wp_memoized_wp_run plugin-path "$owner_user" "$site_path" plugin path)
     value=${value%%$'\n'*}
     if [ -n "$value" ] && [ -d "$value" ]; then
         printf '%s' "$value"
@@ -1236,6 +1261,9 @@ detect_wp_administrator_accounts() {
 detect_wp_db_query() {
     local site_path=$1 owner_user=$2 label=$3 sql=$4
     local status
+    if detect_wp_batch_has_label "$label"; then
+        return 0
+    fi
     status=$(detect_wp_capture "$site_path" "$owner_user" "$label" db query "$sql" --skip-column-names)
     if [ "$status" != "0" ]; then
         log_debug "db query $label gaf exitcode $status voor $site_path"
@@ -1246,7 +1274,7 @@ detect_wp_db_query() {
 
 detect_wp_resolve_table_prefix() {
     local site_path=$1 owner_user=$2 value line
-    value=$(wp_run "$owner_user" "$site_path" db prefix 2>/dev/null) || value=''
+    value=$(detect_wp_memoized_wp_run db-prefix "$owner_user" "$site_path" db prefix)
     value=${value%%$'\n'*}
     value=${value// /}
     if detect_wp_identifier_is_safe "$value"; then
@@ -1264,9 +1292,13 @@ detect_wp_resolve_table_prefix() {
     return 1
 }
 
-detect_wp_check_autoloaded_options() {
-    local site_path=$1 owner_user=$2 prefix=$3
-    local marker escaped
+detect_wp_sql_sanitized_column() {
+    printf 'REPLACE(REPLACE(REPLACE(%s, CHAR(10), '"'"' '"'"'), CHAR(13), '"'"' '"'"'), CHAR(9), '"'"' '"'"')' "$1"
+}
+
+detect_wp_sql_autoload_options() {
+    local prefix=$1
+    local marker escaped columns where_clause sanitized sql
     local -a flag_columns=() where_terms=()
     for marker in "${WP2SHELL_DETECT_WP_OPTION_MARKERS[@]}"; do
         if ! detect_wp_sql_pattern_is_safe "$marker"; then
@@ -1278,15 +1310,201 @@ detect_wp_check_autoloaded_options() {
         where_terms+=("option_value LIKE '%$escaped%'")
     done
     if [ "${#flag_columns[@]}" -eq 0 ]; then
-        return 0
+        return 1
     fi
-    local columns where_clause sanitized sql
     columns=$(detect_wp_join_with ", " "${flag_columns[@]}")
     where_clause=$(detect_wp_join_with " OR " "${where_terms[@]}")
-    sanitized="REPLACE(REPLACE(REPLACE(option_value, CHAR(10), ' '), CHAR(13), ' '), CHAR(9), ' ')"
+    sanitized=$(detect_wp_sql_sanitized_column option_value)
     sql="SELECT option_name, autoload, LENGTH(option_value), $columns, LEFT($sanitized, 400)"
     sql="$sql FROM \`${prefix}options\` WHERE autoload IN ('yes','on','auto-on','auto')"
     sql="$sql AND ($where_clause) ORDER BY LENGTH(option_value) DESC LIMIT 50"
+    printf '%s' "$sql"
+    return 0
+}
+
+detect_wp_sql_autoload_size() {
+    local prefix=$1 sql
+    sql="SELECT option_name, autoload, LENGTH(option_value) FROM \`${prefix}options\`"
+    sql="$sql WHERE autoload IN ('yes','on','auto-on','auto') ORDER BY LENGTH(option_value) DESC LIMIT 10"
+    printf '%s' "$sql"
+    return 0
+}
+
+detect_wp_sql_site_urls() {
+    local prefix=$1 sanitized
+    sanitized=$(detect_wp_sql_sanitized_column option_value)
+    printf 'SELECT option_name, LEFT(%s, 300) FROM `%soptions` WHERE option_name IN ('"'"'siteurl'"'"','"'"'home'"'"')' \
+        "$sanitized" "$prefix"
+    return 0
+}
+
+detect_wp_sql_max_post_id() {
+    printf 'SELECT COALESCE(MAX(ID), 0) FROM `%sposts`' "$1"
+    return 0
+}
+
+detect_wp_sql_bridge_posts() {
+    local prefix=$1 sanitized sql
+    sanitized=$(detect_wp_sql_sanitized_column post_content)
+    sql="SELECT ID, post_type, post_status, post_parent, post_date_gmt, post_modified_gmt, LEFT($sanitized, 400)"
+    sql="$sql FROM \`${prefix}posts\` WHERE post_type IN ('customize_changeset','oembed_cache')"
+    sql="$sql ORDER BY post_modified_gmt DESC LIMIT 100"
+    printf '%s' "$sql"
+    return 0
+}
+
+detect_wp_sql_oembed_options() {
+    local prefix=$1 sanitized
+    sanitized=$(detect_wp_sql_sanitized_column option_value)
+    printf 'SELECT option_name, LEFT(%s, 300) FROM `%soptions` WHERE option_name LIKE '"'"'%%oembed%%'"'"' LIMIT 25' \
+        "$sanitized" "$prefix"
+    return 0
+}
+
+detect_wp_sql_user_range() {
+    printf 'SELECT COUNT(*), COALESCE(MIN(ID), 0), COALESCE(MAX(ID), 0) FROM `%susers`' "$1"
+    return 0
+}
+
+detect_wp_sql_orphan_usermeta() {
+    local prefix=$1 sql
+    sql="SELECT COUNT(DISTINCT m.user_id) FROM \`${prefix}usermeta\` m"
+    sql="$sql LEFT JOIN \`${prefix}users\` u ON u.ID = m.user_id WHERE u.ID IS NULL"
+    printf '%s' "$sql"
+    return 0
+}
+
+detect_wp_sql_orphan_admins() {
+    local prefix=$1 sql
+    sql="SELECT DISTINCT m.user_id FROM \`${prefix}usermeta\` m"
+    sql="$sql LEFT JOIN \`${prefix}users\` u ON u.ID = m.user_id"
+    sql="$sql WHERE u.ID IS NULL AND m.meta_key LIKE '%capabilities' AND m.meta_value LIKE '%administrator%' LIMIT 25"
+    printf '%s' "$sql"
+    return 0
+}
+
+WP2SHELL_DETECT_WP_BATCH_LABELS="autoload-options autoload-size site-urls max-post-id bridge-posts oembed-options user-range orphan-usermeta orphan-admins"
+
+detect_wp_batch_sql_for_label() {
+    local label=$1 prefix=$2
+    case $label in
+        autoload-options) detect_wp_sql_autoload_options "$prefix" ;;
+        autoload-size) detect_wp_sql_autoload_size "$prefix" ;;
+        site-urls) detect_wp_sql_site_urls "$prefix" ;;
+        max-post-id) detect_wp_sql_max_post_id "$prefix" ;;
+        bridge-posts) detect_wp_sql_bridge_posts "$prefix" ;;
+        oembed-options) detect_wp_sql_oembed_options "$prefix" ;;
+        user-range) detect_wp_sql_user_range "$prefix" ;;
+        orphan-usermeta) detect_wp_sql_orphan_usermeta "$prefix" ;;
+        orphan-admins) detect_wp_sql_orphan_admins "$prefix" ;;
+        *) return 1 ;;
+    esac
+    return $?
+}
+
+detect_wp_batch_nonce() {
+    local raw=''
+    if [ -r /dev/urandom ]; then
+        raw=$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom 2>/dev/null | head -c 32) || raw=''
+    fi
+    if [ "${#raw}" -lt 32 ]; then
+        raw=$(printf '%s%s%s' "$$" "${RANDOM}${RANDOM}${RANDOM}" "$(date +%s%N 2>/dev/null)" | sha1sum | cut -c1-32)
+    fi
+    printf '%s' "$raw"
+    return 0
+}
+
+detect_wp_db_batch_reset() {
+    WP2SHELL_DETECT_WP_BATCH_READY=''
+    return 0
+}
+
+detect_wp_db_batch_prepare() {
+    local site_path=$1 owner_user=$2 prefix=$3
+    local label sql nonce combined='' status ordered=''
+    detect_wp_db_batch_reset
+    if [ "${WP2SHELL_DETECT_WP_DB_BATCH:-1}" != "1" ]; then
+        return 0
+    fi
+    nonce=$(detect_wp_batch_nonce)
+    if [ "${#nonce}" -lt 32 ]; then
+        log_debug "Kon geen bruikbare batchmarkering maken voor $site_path"
+        return 0
+    fi
+    for label in $WP2SHELL_DETECT_WP_BATCH_LABELS; do
+        if ! sql=$(detect_wp_batch_sql_for_label "$label" "$prefix"); then
+            continue
+        fi
+        combined="${combined}SELECT '${nonce}:${label}';
+${sql};
+"
+        ordered="$ordered $label"
+    done
+    if [ -z "$ordered" ]; then
+        return 0
+    fi
+    status=$(detect_wp_capture "$site_path" "$owner_user" db-batch db query "$combined" --skip-column-names)
+    if [ "$status" != "0" ]; then
+        log_debug "Gebundelde databasequery gaf exitcode $status voor $site_path, terugval op losse queries"
+        return 0
+    fi
+    if ! detect_wp_db_batch_split "$nonce" "$ordered"; then
+        log_debug "Gebundelde databasequery kon niet gesplitst worden voor $site_path, terugval op losse queries"
+        detect_wp_db_batch_reset
+        return 0
+    fi
+    return 0
+}
+
+detect_wp_db_batch_split() {
+    local nonce=$1 ordered=$2
+    local combined_file current='' line target label
+    combined_file=$(detect_wp_work_file db-batch.out)
+    if [ ! -r "$combined_file" ]; then
+        return 1
+    fi
+    for label in $ordered; do
+        : > "$(detect_wp_work_file "$label.out")"
+    done
+    while IFS= read -r line || [ -n "$line" ]; do
+        case $line in
+            "$nonce":*)
+                current=${line#"$nonce":}
+                case " $ordered " in
+                    *" $current "*) : ;;
+                    *) current='' ;;
+                esac
+                if [ -n "$current" ]; then
+                    WP2SHELL_DETECT_WP_BATCH_READY="$WP2SHELL_DETECT_WP_BATCH_READY $current"
+                fi
+                continue
+                ;;
+        esac
+        if [ -z "$current" ]; then
+            continue
+        fi
+        target=$(detect_wp_work_file "$current.out")
+        printf '%s\n' "$line" >> "$target"
+    done < "$combined_file"
+    if [ -z "$WP2SHELL_DETECT_WP_BATCH_READY" ]; then
+        return 1
+    fi
+    return 0
+}
+
+detect_wp_batch_has_label() {
+    case " ${WP2SHELL_DETECT_WP_BATCH_READY:-} " in
+        *" $1 "*) return 0 ;;
+    esac
+    return 1
+}
+
+detect_wp_check_autoloaded_options() {
+    local site_path=$1 owner_user=$2 prefix=$3
+    local sql
+    if ! sql=$(detect_wp_sql_autoload_options "$prefix"); then
+        return 0
+    fi
     if ! detect_wp_db_query "$site_path" "$owner_user" autoload-options "$sql"; then
         record_finding \
             "site=$site_path" \
@@ -1419,8 +1637,7 @@ detect_wp_check_large_autoloaded_options() {
         ''|*[!0-9]*) threshold=262144 ;;
     esac
     local sql results_file line option_name autoload_value length
-    sql="SELECT option_name, autoload, LENGTH(option_value) FROM \`${prefix}options\`"
-    sql="$sql WHERE autoload IN ('yes','on','auto-on','auto') ORDER BY LENGTH(option_value) DESC LIMIT 10"
+    sql=$(detect_wp_sql_autoload_size "$prefix")
     if ! detect_wp_db_query "$site_path" "$owner_user" autoload-size "$sql"; then
         return 0
     fi
@@ -1454,10 +1671,9 @@ detect_wp_check_large_autoloaded_options() {
 
 detect_wp_check_site_urls() {
     local site_path=$1 owner_user=$2 prefix=$3 expected_domain=$4
-    local sanitized sql results_file line option_name option_value
+    local sql results_file line option_name option_value
     local siteurl='' home=''
-    sanitized="REPLACE(REPLACE(REPLACE(option_value, CHAR(10), ' '), CHAR(13), ' '), CHAR(9), ' ')"
-    sql="SELECT option_name, LEFT($sanitized, 300) FROM \`${prefix}options\` WHERE option_name IN ('siteurl','home')"
+    sql=$(detect_wp_sql_site_urls "$prefix")
     if ! detect_wp_db_query "$site_path" "$owner_user" site-urls "$sql"; then
         return 0
     fi
@@ -1606,8 +1822,8 @@ detect_wp_check_active_plugins() {
 
 detect_wp_check_bridge_posts() {
     local site_path=$1 owner_user=$2 prefix=$3
-    local sanitized sql results_file max_post_id=0
-    sql="SELECT COALESCE(MAX(ID), 0) FROM \`${prefix}posts\`"
+    local sql results_file max_post_id=0
+    sql=$(detect_wp_sql_max_post_id "$prefix")
     if detect_wp_db_query "$site_path" "$owner_user" max-post-id "$sql"; then
         results_file=$(detect_wp_work_file max-post-id.out)
         read -r max_post_id < "$results_file" || max_post_id=0
@@ -1615,10 +1831,7 @@ detect_wp_check_bridge_posts() {
             ''|*[!0-9]*) max_post_id=0 ;;
         esac
     fi
-    sanitized="REPLACE(REPLACE(REPLACE(post_content, CHAR(10), ' '), CHAR(13), ' '), CHAR(9), ' ')"
-    sql="SELECT ID, post_type, post_status, post_parent, post_date_gmt, post_modified_gmt, LEFT($sanitized, 400)"
-    sql="$sql FROM \`${prefix}posts\` WHERE post_type IN ('customize_changeset','oembed_cache')"
-    sql="$sql ORDER BY post_modified_gmt DESC LIMIT 100"
+    sql=$(detect_wp_sql_bridge_posts "$prefix")
     if ! detect_wp_db_query "$site_path" "$owner_user" bridge-posts "$sql"; then
         record_finding \
             "site=$site_path" \
@@ -1716,9 +1929,7 @@ detect_wp_check_bridge_posts() {
 detect_wp_check_oembed_options() {
     local site_path=$1 owner_user=$2 prefix=$3
     local sql results_file line option_name snippet
-    local sanitized
-    sanitized="REPLACE(REPLACE(REPLACE(option_value, CHAR(10), ' '), CHAR(13), ' '), CHAR(9), ' ')"
-    sql="SELECT option_name, LEFT($sanitized, 300) FROM \`${prefix}options\` WHERE option_name LIKE '%oembed%' LIMIT 25"
+    sql=$(detect_wp_sql_oembed_options "$prefix")
     if ! detect_wp_db_query "$site_path" "$owner_user" oembed-options "$sql"; then
         return 0
     fi
@@ -1760,7 +1971,7 @@ detect_wp_check_oembed_options() {
 detect_wp_check_user_gaps() {
     local site_path=$1 owner_user=$2 prefix=$3
     local sql results_file total minimum maximum gap=0
-    sql="SELECT COUNT(*), COALESCE(MIN(ID), 0), COALESCE(MAX(ID), 0) FROM \`${prefix}users\`"
+    sql=$(detect_wp_sql_user_range "$prefix")
     if ! detect_wp_db_query "$site_path" "$owner_user" user-range "$sql"; then
         return 0
     fi
@@ -1779,8 +1990,7 @@ detect_wp_check_user_gaps() {
         gap=$((maximum - minimum + 1 - total))
     fi
     local orphan_total=0 orphan_admins=''
-    sql="SELECT COUNT(DISTINCT m.user_id) FROM \`${prefix}usermeta\` m"
-    sql="$sql LEFT JOIN \`${prefix}users\` u ON u.ID = m.user_id WHERE u.ID IS NULL"
+    sql=$(detect_wp_sql_orphan_usermeta "$prefix")
     if detect_wp_db_query "$site_path" "$owner_user" orphan-usermeta "$sql"; then
         results_file=$(detect_wp_work_file orphan-usermeta.out)
         read -r orphan_total < "$results_file" || orphan_total=0
@@ -1789,9 +1999,7 @@ detect_wp_check_user_gaps() {
         esac
     fi
     local -a orphan_admin_ids=()
-    sql="SELECT DISTINCT m.user_id FROM \`${prefix}usermeta\` m"
-    sql="$sql LEFT JOIN \`${prefix}users\` u ON u.ID = m.user_id"
-    sql="$sql WHERE u.ID IS NULL AND m.meta_key LIKE '%capabilities' AND m.meta_value LIKE '%administrator%' LIMIT 25"
+    sql=$(detect_wp_sql_orphan_admins "$prefix")
     if detect_wp_db_query "$site_path" "$owner_user" orphan-admins "$sql"; then
         results_file=$(detect_wp_work_file orphan-admins.out)
         local orphan_id
@@ -1873,6 +2081,7 @@ detect_wp_database_persistence() {
     fi
     WP2SHELL_DETECT_WP_TABLE_PREFIX="$prefix"
     WP2SHELL_DETECT_WP_DB_STATUS="uitgevoerd met prefix $prefix"
+    detect_wp_db_batch_prepare "$site_path" "$owner_user" "$prefix"
     detect_wp_check_autoloaded_options "$site_path" "$owner_user" "$prefix"
     detect_wp_check_site_urls "$site_path" "$owner_user" "$prefix" "$expected_domain"
     detect_wp_check_bridge_posts "$site_path" "$owner_user" "$prefix"
@@ -2316,6 +2525,8 @@ detect_wp_for_site() {
     fi
     register_temp_cleanup "$work_dir"
     WP2SHELL_DETECT_WP_WORK_DIR="$work_dir"
+    detect_wp_db_batch_reset
+    detect_wp_memo_reset
     WP2SHELL_DETECT_WP_TABLE_PREFIX=""
     WP2SHELL_DETECT_WP_ACTIVE_PLUGINS_FILE=""
     WP2SHELL_DETECT_WP_CORE_ADDED=0
