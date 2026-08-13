@@ -111,7 +111,8 @@ if [ "${#MISSING_PATHS[@]}" -gt 0 ]; then
     printf 'FOUT: in %s ontbreken: %s\n' "$REPO_ROOT" "${MISSING_PATHS[*]}" >&2
     printf 'deploy.sh pakt de toolkit in vanuit de map waarin het script zelf staat.\n' >&2
     printf 'Zet de hele repository op deze server neer en draai deploy.sh vanuit die map,\n' >&2
-    printf 'bijvoorbeeld met: git clone git@github.com:BeuningenIT/wp2shell-fix.git\n' >&2
+    printf 'bijvoorbeeld met: git clone https://github.com/BeuningenIT/wp2shell-fix.git\n' >&2
+    printf 'Gebruik de https-url en niet de ssh-url, want die vraagt om een sleutel op deze server.\n' >&2
     exit 1
 fi
 
