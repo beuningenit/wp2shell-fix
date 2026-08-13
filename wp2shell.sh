@@ -488,12 +488,37 @@ require_detection_modules() {
     return 0
 }
 
+WP2SHELL_CROSSSITE_EXCLUDED_CATEGORIES=(
+    "directory-guard-present"
+    "php-in-writable-directory-allowlisted"
+    "integrity-unverified"
+    "integrity-package-dir-missing"
+    "integrity-coverage-partial"
+    "integrity-summary"
+    "core-file-outdated"
+    "oversized-php-unscanned"
+    "mu-plugin-present"
+)
+
+category_is_crosssite_candidate() {
+    local candidate=$1 entry
+    if [ -z "$candidate" ]; then
+        return 1
+    fi
+    for entry in "${WP2SHELL_CROSSSITE_EXCLUDED_CATEGORIES[@]}"; do
+        if [ "$entry" = "$candidate" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
 feed_crosssite_from_findings() {
     local site_path=$1
     if [ ! -s "${WP2SHELL_FINDINGS_FILE:-}" ]; then
         return 0
     fi
-    local snapshot line record_site confidence file_path digest fed=0
+    local snapshot line record_site confidence category rank file_path digest fed=0
     snapshot=$(mktemp -t wp2shell-xsite.XXXXXXXX) || return 0
     register_temp_cleanup "$snapshot"
     cp -- "$WP2SHELL_FINDINGS_FILE" "$snapshot"
@@ -507,6 +532,17 @@ feed_crosssite_from_findings() {
         fi
         confidence=$(json_extract_field "$line" confidence) || confidence=''
         if [ "$confidence" != "$CONFIDENCE_HIGH" ] && [ "$confidence" != "$CONFIDENCE_HEURISTIC" ]; then
+            continue
+        fi
+        category=$(json_extract_field "$line" category) || category=''
+        if ! category_is_crosssite_candidate "$category"; then
+            continue
+        fi
+        rank=$(json_extract_field "$line" severity_rank) || rank=0
+        case $rank in
+            ''|*[!0-9]*) rank=0 ;;
+        esac
+        if [ "$rank" -lt 30 ]; then
             continue
         fi
         file_path=$(json_extract_field "$line" file_path) || file_path=''

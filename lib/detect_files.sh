@@ -1211,11 +1211,11 @@ detect_files_evaluate_file() {
     detect_files_report_suspicious_name "$site_path" "$relative" "$candidate" "$size"
     if [ "$scannable" = "1" ]; then
         detect_files_scan_file_content "$site_path" "$relative" "$candidate" "$size" || return 1
-        if declare -F detect_regex_scan_file >/dev/null 2>&1; then
-            detect_regex_scan_file "$site_path" "$candidate" "$size" || true
-        fi
     fi
     detect_files_report_configuration_file "$site_path" "$relative" "$candidate" "$size"
+    if detect_files_is_php_candidate "$base" && declare -F detect_regex_scan_file >/dev/null 2>&1; then
+        detect_regex_scan_file "$site_path" "$candidate" "$size" || true
+    fi
     return 0
 }
 
