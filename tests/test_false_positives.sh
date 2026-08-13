@@ -7,6 +7,7 @@ REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 . "$REPO_ROOT/lib/version.sh"
 . "$REPO_ROOT/lib/discovery.sh"
 . "$REPO_ROOT/lib/detect_files.sh"
+. "$REPO_ROOT/lib/detect_wp.sh"
 . "$REPO_ROOT/lib/detect_logs.sh"
 . "$REPO_ROOT/lib/quarantine.sh"
 . "$REPO_ROOT/lib/harden.sh"
@@ -161,6 +162,86 @@ expect_equal "blinde vlekken worden ontdubbeld gemeld" "wp-cli-unavailable" \
 printf '{"category":"log-missing","confidence":"high-confidence"}\n' > "$BLIND_FIXTURE"
 expect_equal "zonder blinde vlekken is de lijst leeg" "" \
     "$(collect_verification_blind_spots "$BLIND_FIXTURE")"
+
+COMPLETE_FIXTURE="$FIXTURE/scope.ndjson"
+printf '{"category":"wp-scan-scope","confidence":"high-confidence"}\n' > "$COMPLETE_FIXTURE"
+
+expect_equal "volledig bewijs levert geen probleem op" "" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 0)"
+
+expect_equal "een gestopte detector blokkeert het schoon-oordeel" "een van de controles is voortijdig gestopt" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 1)"
+
+expect_equal "zonder afrondingsbewijs is de controle onvolledig" \
+    "de WordPress-controles hebben geen afronding gemeld" \
+    "$(printf '{"category":"log-missing","confidence":"info"}\n' > "$FIXTURE/noscope.ndjson"; verification_completeness_problems "$FIXTURE/noscope.ndjson" 0)"
+
+SAVED_CORE=${WP2SHELL_SCAN_CORE_CHECKSUMS:-1}
+WP2SHELL_SCAN_CORE_CHECKSUMS=0
+expect_equal "uitgezette core-integriteitscontrole blokkeert het schoon-oordeel" \
+    "de core-integriteitscontrole staat uit in de configuratie" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 0)"
+WP2SHELL_SCAN_CORE_CHECKSUMS=$SAVED_CORE
+
+SAVED_PLUGIN=${WP2SHELL_SCAN_PLUGIN_CHECKSUMS:-1}
+WP2SHELL_SCAN_PLUGIN_CHECKSUMS=0
+expect_equal "uitgezette plugin-integriteitscontrole blokkeert het schoon-oordeel" \
+    "de plugin-integriteitscontrole staat uit in de configuratie" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 0)"
+WP2SHELL_SCAN_PLUGIN_CHECKSUMS=$SAVED_PLUGIN
+
+expect_equal "een onbekende tabelprefix blokkeert het schoon-oordeel" "ja" \
+    "$(category_indicates_blind_spot "db-prefix-unknown" && printf 'ja' || printf 'nee')"
+expect_equal "een mislukte autoload-query blokkeert het schoon-oordeel" "ja" \
+    "$(category_indicates_blind_spot "db-autoload-query-failed" && printf 'ja' || printf 'nee')"
+
+expect_equal "een onvolledige WordPress-controle blokkeert het schoon-oordeel" "ja" \
+    "$(category_indicates_blind_spot "wp-checks-incomplete" && printf 'ja' || printf 'nee')"
+expect_equal "onleesbare cron-uitvoer blokkeert het schoon-oordeel" "ja" \
+    "$(category_indicates_blind_spot "cron-list-unparsable" && printf 'ja' || printf 'nee')"
+
+WP_BADCRON="$FIXTURE/wp-badcron"
+cat > "$WP_BADCRON" <<'STUBEOF'
+#!/bin/bash
+case " $* " in
+    *" is-installed "*) exit 0 ;;
+    *" db prefix "*) printf 'wp_\n'; exit 0 ;;
+    *" db query "*) exit 0 ;;
+    *" core version "*) printf '7.0.3\n'; exit 0 ;;
+    *" verify-checksums "*) printf 'Success: WordPress installation verifies against checksums.\n'; exit 0 ;;
+    *" user list "*) printf '[]\n'; exit 0 ;;
+    *" event list "*) printf 'geen-json-maar-wel-gevuld\n'; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUBEOF
+chmod 0755 "$WP_BADCRON"
+
+CRON_SITE="$FIXTURE/cronsite"
+mkdir -p "$CRON_SITE/wp-includes" "$CRON_SITE/wp-admin" "$CRON_SITE/wp-content/plugins"
+{
+    printf '<?php\n'
+    printf '$wp_version = %s7.0.3%s;\n' "'" "'"
+    printf '$wp_db_version = 60717;\n'
+} > "$CRON_SITE/wp-includes/version.php"
+printf '<?php\n' > "$CRON_SITE/wp-config.php"
+
+CRON_RECHECK="$FIXTURE/cron-recheck.ndjson"
+SAVED_CLI=${WP2SHELL_WP_CLI_RESOLVED:-}
+SAVED_FINDINGS=$WP2SHELL_FINDINGS_FILE
+WP2SHELL_WP_CLI_RESOLVED="$WP_BADCRON"
+CRON_STATUS=0
+rerun_detection_into "$CRON_SITE" "$(id -un)" "cron.nl" "$CRON_RECHECK" || CRON_STATUS=$?
+WP2SHELL_WP_CLI_RESOLVED=$SAVED_CLI
+WP2SHELL_FINDINGS_FILE=$SAVED_FINDINGS
+
+expect_equal "onleesbare cron-uitvoer wordt wel gemeld" "1" \
+    "$("${WP2SHELL_GREP:-grep}" -c 'cron-list-unparsable' "$CRON_RECHECK" || true)"
+expect_equal "de onvolledige controle wordt apart vastgelegd" "1" \
+    "$("${WP2SHELL_GREP:-grep}" -c 'wp-checks-incomplete' "$CRON_RECHECK" || true)"
+
+CRON_PROBLEMS=$(verification_completeness_problems "$CRON_RECHECK" "$CRON_STATUS")
+expect_equal "en die blokkeert het schoon-oordeel" "ja" \
+    "$([ -n "$CRON_PROBLEMS" ] && printf 'ja' || printf 'nee')"
 
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then

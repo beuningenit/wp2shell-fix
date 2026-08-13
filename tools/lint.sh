@@ -29,7 +29,7 @@ fi
 
 printf 'Controle op commentaarregels in scripts\n'
 while IFS= read -r -d '' file; do
-    offending=$(grep -nE '^[[:space:]]*#' "$file" | grep -vE '^1:#!/bin/bash' || true)
+    offending=$(grep -nE '^[[:space:]]*#' "$file" | grep -vE '^[0-9]+:#!/bin/bash$' || true)
     if [ -n "$offending" ]; then
         printf '%s bevat commentaarregels:\n%s\n' "$file" "$offending" >&2
         failures=$((failures + 1))
