@@ -288,6 +288,57 @@ expect_equal "een controle die zich wel afmeldt telt als afgerond" "0" \
        detect_wp_run_child_check "proefcontrole" detect_wp_mark_check_complete >/dev/null 2>&1; \
        printf '%s' "${#WP2SHELL_DETECT_WP_FAILED_CHECKS[@]}")"
 
+GUARD_SITE="$FIXTURE/guardsite"
+mkdir -p "$GUARD_SITE/wp-includes" "$GUARD_SITE/wp-content/uploads" "$GUARD_SITE/wp-content/cache"
+{
+    printf '<?php\n'
+    printf '$wp_version = %s7.0.3%s;\n' "'" "'"
+    printf '$wp_db_version = 60717;\n'
+} > "$GUARD_SITE/wp-includes/version.php"
+printf '<?php\n' > "$GUARD_SITE/wp-config.php"
+printf '<?php\n' > "$GUARD_SITE/wp-content/uploads/index.php"
+printf '<?php\n' > "$GUARD_SITE/wp-content/cache/index.php"
+printf '<?php @eval($_POST["x"]);\n' > "$GUARD_SITE/wp-content/uploads/shell.php"
+printf '<?php\n@eval($_POST["x"]);\n' > "$GUARD_SITE/wp-content/cache/index2.php"
+
+SAVED_ALLOWLIST=("${WP2SHELL_ALLOWLIST_PATHS[@]}")
+WP2SHELL_ALLOWLIST_PATHS=()
+: > "$WP2SHELL_FINDINGS_FILE"
+detect_files_for_site "$GUARD_SITE" "$(id -un)" >/dev/null 2>&1
+WP2SHELL_ALLOWLIST_PATHS=("${SAVED_ALLOWLIST[@]}")
+
+count_category_for() {
+    php -r '
+        $n = 0;
+        foreach (file($argv[1]) as $line) {
+            $d = json_decode($line, true);
+            if (!$d) { continue; }
+            if ($d["category"] !== $argv[2]) { continue; }
+            if (basename($d["file_path"]) !== $argv[3]) { continue; }
+            $n++;
+        }
+        echo $n;
+    ' "$WP2SHELL_FINDINGS_FILE" "$1" "$2"
+}
+
+expect_equal "beide lege index.php bestanden worden met rust gelaten" "2" \
+    "$(count_category_for directory-guard-present index.php)"
+expect_equal "die index.php is geen op te ruimen bevinding" "0" \
+    "$(count_category_for php-in-writable-directory index.php)"
+expect_equal "een webshell in uploads blijft bevestigd" "1" \
+    "$(count_category_for php-in-writable-directory shell.php)"
+expect_equal "een index.php met eval erin blijft bevestigd" "1" \
+    "$(count_category_for php-in-writable-directory index2.php)"
+
+expect_equal "een lege index.php telt als onschuldige wachter" "ja" \
+    "$(detect_files_is_harmless_directory_guard "$GUARD_SITE/wp-content/uploads/index.php" 6 && printf 'ja' || printf 'nee')"
+expect_equal "een index.php met code telt niet als wachter" "nee" \
+    "$(detect_files_is_harmless_directory_guard "$GUARD_SITE/wp-content/cache/index2.php" 30 && printf 'ja' || printf 'nee')"
+expect_equal "onschuldige inhoud onder een andere naam telt niet als wachter" "nee" \
+    "$(detect_files_is_harmless_directory_guard "$GUARD_SITE/wp-content/uploads/willekeurig.php" 6 && printf 'ja' || printf 'nee')"
+expect_equal "een te groot bestand telt niet als wachter" "nee" \
+    "$(detect_files_is_harmless_directory_guard "$GUARD_SITE/wp-content/uploads/index.php" 5000 && printf 'ja' || printf 'nee')"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1

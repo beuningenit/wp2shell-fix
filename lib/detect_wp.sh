@@ -608,6 +608,58 @@ detect_wp_content_directory() {
     return 1
 }
 
+WP2SHELL_DETECT_WP_OLD_FILES_LOADED=0
+WP2SHELL_DETECT_WP_OLD_FILES=""
+
+detect_wp_load_old_core_files() {
+    local site_path=$1
+    WP2SHELL_DETECT_WP_OLD_FILES_LOADED=1
+    WP2SHELL_DETECT_WP_OLD_FILES=""
+    if [ "${WP2SHELL_DETECT_WP_CORE_MODIFIED:-0}" != "0" ]; then
+        log_debug "Core bevat gewijzigde bestanden, de lijst met oude kernbestanden wordt niet vertrouwd"
+        return 0
+    fi
+    local source_file="$site_path/wp-admin/includes/update-core.php"
+    if [ ! -r "$source_file" ]; then
+        return 0
+    fi
+    local extracted
+    extracted=$(php -r '
+        $path = $argv[1];
+        $text = @file_get_contents($path);
+        if ($text === false) { exit(0); }
+        if (!preg_match("/\\\$_old_files\\s*=\\s*array\\s*\\((.*?)\\n\\s*\\)\\s*;/s", $text, $m)) { exit(0); }
+        if (preg_match_all("/[\"\x27]([^\"\x27\\n]+)[\"\x27]/", $m[1], $hits)) {
+            foreach ($hits[1] as $entry) {
+                $entry = trim($entry);
+                if ($entry !== "" && strpos($entry, "..") === false) { echo $entry, "\n"; }
+            }
+        }
+    ' "$source_file" 2>/dev/null) || extracted=''
+    if [ -z "$extracted" ]; then
+        return 0
+    fi
+    WP2SHELL_DETECT_WP_OLD_FILES=$(printf '%s' "$extracted" | tr '\n' '|')
+    local count
+    count=$(printf '%s\n' "$extracted" | grep -c . 2>/dev/null) || count=0
+    log_debug "Lijst met oude kernbestanden geladen, $count paden"
+    return 0
+}
+
+detect_wp_path_is_known_old_core_file() {
+    local site_path=$1 relative=$2
+    if [ "$WP2SHELL_DETECT_WP_OLD_FILES_LOADED" != "1" ]; then
+        detect_wp_load_old_core_files "$site_path"
+    fi
+    if [ -z "$WP2SHELL_DETECT_WP_OLD_FILES" ]; then
+        return 1
+    fi
+    case "|$WP2SHELL_DETECT_WP_OLD_FILES|" in
+        *"|$relative|"*) return 0 ;;
+    esac
+    return 1
+}
+
 detect_wp_path_is_operational_artifact() {
     local relative=$1
     local base=${relative##*/}
@@ -657,6 +709,12 @@ detect_wp_report_checksum_entry() {
                 title="Bevestigde webshell aangetroffen op basis van hashvergelijking"
                 detail="Dit bestand hoort niet bij de officiele release en de hash komt overeen met een gepubliceerde IOC ($ioc_label). Dit is geen vermoeden maar een bevestigde besmetting."
                 remediation="Behandel deze site als gecompromitteerd. Plaats het bestand in quarantaine via de opschoonstap, roteer databasewachtwoorden en salts, en controleer alle beheerdersaccounts."
+            elif detect_wp_path_is_known_old_core_file "$site_path" "$relative"; then
+                severity="$SEVERITY_LOW"
+                confidence="$CONFIDENCE_HEURISTIC"
+                title="Achtergebleven bestand van een oudere WordPress-versie"
+                detail="Dit bestand staat in de lijst met oude kernbestanden die WordPress zelf bijhoudt in wp-admin/includes/update-core.php, en hoort dus bij een eerdere versie. Dat gebeurt wanneer een update via een bestandskopie is gedaan in plaats van via de updater. Het is geen dropper, maar oude corebestanden horen wel opgeruimd te worden omdat ze soms bekende kwetsbaarheden bevatten."
+                remediation="Verwijder dit bestand met de hand nadat je hebt vastgesteld dat de site op de actuele versie draait."
             elif detect_wp_path_is_operational_artifact "$relative"; then
                 severity="$SEVERITY_INFO"
                 confidence="$CONFIDENCE_HEURISTIC"
