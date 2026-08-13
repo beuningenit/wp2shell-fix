@@ -4,6 +4,15 @@ set -uo pipefail
 REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 . "$REPO_ROOT/lib/common.sh"
 
+WP2SHELL_CONFIG_FILE=${WP2SHELL_CONFIG_FILE:-$REPO_ROOT/config/wp2shell.conf}
+if [ -r "$WP2SHELL_CONFIG_FILE" ]; then
+    . "$WP2SHELL_CONFIG_FILE"
+else
+    printf 'Configuratiebestand %s is niet leesbaar, de diagnose gebruikt dan andere\n' "$WP2SHELL_CONFIG_FILE" >&2
+    printf 'instellingen dan de echte run en zegt dus niet hetzelfde.\n' >&2
+    exit 2
+fi
+
 if [ "$#" -lt 1 ]; then
     printf 'Gebruik: %s <pad-naar-docroot> [systeemgebruiker]\n' "$0" >&2
     exit 2
@@ -25,6 +34,12 @@ printf 'Gebruiker : %s\n' "$OWNER_USER"
 printf 'Draait als: %s\n\n' "$(id -un)"
 
 detect_optional_commands >/dev/null 2>&1
+if ! resolve_external_tools >/dev/null 2>&1; then
+    printf 'De externe hulpmiddelen konden niet vastgepind worden, de diagnose stopt.\n' >&2
+    exit 2
+fi
+printf 'Tijdslimiet per aanroep: %s\n' "${WP2SHELL_COMMAND_TIMEOUT:-geen}"
+printf 'Configuratie           : %s\n\n' "$WP2SHELL_CONFIG_FILE"
 
 WORK_DIR=$(mktemp -d) || exit 1
 trap 'rm -rf -- "$WORK_DIR"' EXIT INT TERM HUP

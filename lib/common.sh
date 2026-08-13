@@ -578,13 +578,34 @@ wp_is_functional() {
         wp_run "$user" "$site_path" core is-installed >/dev/null 2>&1
         return $?
     fi
+    local limit=${WP2SHELL_PROBE_CAPTURE_MAX_BYTES:-65536}
+    case $limit in
+        ''|*[!0-9]*) limit=65536 ;;
+    esac
     : > "$capture" 2>/dev/null || true
-    wp_run "$user" "$site_path" core is-installed >"$capture" 2>&1
-    return $?
+    local -a probe_statuses=()
+    wp_run "$user" "$site_path" core is-installed 2>&1 \
+        | head -c "$limit" > "$capture"
+    probe_statuses=("${PIPESTATUS[@]}")
+    return "${probe_statuses[0]}"
 }
 
 wp_probe_failure_reason() {
-    local capture=$1 status=$2 line reason=''
+    local capture=$1 status=$2 line reason='' limit captured=0
+    limit=${WP2SHELL_PROBE_CAPTURE_MAX_BYTES:-65536}
+    case $limit in
+        ''|*[!0-9]*) limit=65536 ;;
+    esac
+    if [ -n "$capture" ] && [ -r "$capture" ]; then
+        captured=$(stat -c '%s' -- "$capture" 2>/dev/null) || captured=0
+        case $captured in
+            ''|*[!0-9]*) captured=0 ;;
+        esac
+    fi
+    if [ "$captured" -ge "$limit" ]; then
+        printf 'wp core is-installed bleef uitvoer produceren en is afgekapt op %s bytes, dat wijst op een installatie die tijdens het opstarten blijft schrijven' "$limit"
+        return 0
+    fi
     if [ -n "$capture" ] && [ -s "$capture" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
             case $line in
@@ -596,6 +617,7 @@ wp_probe_failure_reason() {
     fi
     if [ -z "$reason" ]; then
         case $status in
+            13|141) reason="wp core is-installed werd afgebroken omdat de uitvoer niet meer gelezen werd" ;;
             124|137) reason="wp core is-installed liep in de tijdslimiet en is afgebroken" ;;
             126) reason="wp core is-installed mocht niet uitgevoerd worden, controleer sudo en de rechten op het WP-CLI-bestand" ;;
             127) reason="wp core is-installed vond php of WP-CLI niet in het pad /usr/local/bin:/usr/bin:/bin" ;;

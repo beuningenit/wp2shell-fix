@@ -52,6 +52,31 @@ rm -f -- "$probe"
 expect_contains "ontbrekend bestand levert nog steeds een duiding" \
     "exitcode 3" "$(wp_probe_failure_reason "$probe" 3)"
 
+head -c "${WP2SHELL_PROBE_CAPTURE_MAX_BYTES:-65536}" /dev/zero | tr '\0' 'A' > "$probe"
+expect_contains "een volgelopen opvangbestand wordt als afkapping geduid" \
+    "afgekapt op" "$(wp_probe_failure_reason "$probe" 13)"
+
+SPUIT="$WORKROOT/wp-spuit"
+cat > "$SPUIT" <<'SPUITEOF'
+#!/bin/bash
+while :; do printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; done
+SPUITEOF
+chmod 0755 -- "$SPUIT"
+spuit_capture="$WORKROOT/spuit.out"
+spuit_status=0
+(
+    WP2SHELL_WP_CLI_RESOLVED="$SPUIT"
+    wp_is_functional "$(id -un)" "$WORKROOT" "$spuit_capture"
+) || spuit_status=$?
+spuit_bytes=$(stat -c '%s' -- "$spuit_capture" 2>/dev/null) || spuit_bytes=0
+tests_run=$((tests_run + 1))
+if [ "$spuit_status" -ne 0 ] && [ "$spuit_bytes" -le "${WP2SHELL_PROBE_CAPTURE_MAX_BYTES:-65536}" ]; then
+    printf 'ok   eindeloze uitvoer wordt begrensd op %s bytes\n' "$spuit_bytes"
+else
+    printf 'FAIL eindeloze uitvoer werd niet begrensd: status %s, %s bytes\n' "$spuit_status" "$spuit_bytes" >&2
+    tests_failed=$((tests_failed + 1))
+fi
+
 SITE="$WORKROOT/home/klant/domains/a.nl/public_html"
 mkdir -p "$SITE/wp-includes" "$SITE/wp-admin" "$SITE/wp-content/plugins" "$SITE/wp-content/themes"
 printf '<?php\n$table_prefix = "wp_";\n' > "$SITE/wp-config.php"
