@@ -457,6 +457,19 @@ detect_regex_join_labels() {
     return 0
 }
 
+WP2SHELL_REGEX_REQUEST_LINKED=0
+WP2SHELL_REGEX_REQUEST_LINKED_CATEGORIES="input-eval input-assert input-variable-function input-decode computed-superglobal selfhealing-dropper array-function-exec"
+
+detect_regex_category_is_request_linked() {
+    local candidate=$1 entry
+    for entry in $WP2SHELL_REGEX_REQUEST_LINKED_CATEGORIES; do
+        if [ "$entry" = "$candidate" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 detect_regex_report_matches() {
     local site_path=$1 candidate=$2 target=$3 truncated=$4
     local -a high_categories=() medium_categories=() low_categories=()
@@ -515,6 +528,13 @@ detect_regex_report_matches() {
         esac
     done
     local high_total=${#high_categories[@]}
+    WP2SHELL_REGEX_REQUEST_LINKED=0
+    local high_entry
+    for high_entry in "${high_categories[@]+"${high_categories[@]}"}"; do
+        if detect_regex_category_is_request_linked "$high_entry"; then
+            WP2SHELL_REGEX_REQUEST_LINKED=$((WP2SHELL_REGEX_REQUEST_LINKED + 1))
+        fi
+    done
     local medium_total=${#medium_categories[@]}
     local low_total=${#low_categories[@]}
     if [ "$high_total" -eq 0 ] && [ "$medium_total" -lt 2 ]; then
@@ -551,12 +571,12 @@ detect_regex_report_matches() {
         category_name="regex-backdoor-signature"
         title="Bevestigd backdoor-patroon in PHP-bestand"
         detail="Dit bestand voert invoer uit het verzoek rechtstreeks uit als PHP-code: $strong_summary. Daar bestaat geen legitieme toepassing voor, dus dit patroon geldt op zichzelf als bevestigd."
-    elif [ "$high_total" -ge 2 ] && [ "$demoted" = "0" ]; then
+    elif [ "$high_total" -ge 2 ] && [ "$demoted" = "0" ] && [ "$WP2SHELL_REGEX_REQUEST_LINKED" -ge 1 ]; then
         severity="$SEVERITY_CRITICAL"
         confidence_level="$CONFIDENCE_HIGH"
         category_name="regex-backdoor-signature"
         title="Bevestigd backdoor-patroon in PHP-bestand"
-        detail="Er zijn $high_total onafhankelijke sterke patronen uit verschillende categorieen aangetroffen: $strong_summary. Een enkel sterk patroon blijft heuristisch, want ook betaalde plugins worden soms versleuteld uitgeleverd. Vanaf twee onafhankelijke categorieen wordt dit als bevestigd gerapporteerd."
+        detail="Er zijn $high_total onafhankelijke sterke patronen aangetroffen, waarvan minstens een de code rechtstreeks koppelt aan invoer uit het verzoek: $strong_summary. Obfuscatie alleen is niet genoeg, want betaalde plugins worden ook versleuteld uitgeleverd. Pas in combinatie met een koppeling aan verzoekinvoer geldt dit als bevestigd."
     else
         severity="$SEVERITY_HIGH"
         confidence_level="$CONFIDENCE_HEURISTIC"

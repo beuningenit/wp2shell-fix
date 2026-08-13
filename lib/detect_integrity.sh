@@ -251,6 +251,30 @@ detect_integrity_header_token() {
     return 0
 }
 
+detect_integrity_core_locale() {
+    local site_path=$1
+    local file="$site_path/wp-includes/version.php"
+    if [ ! -r "$file" ]; then
+        return 1
+    fi
+    local line value='' count=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        count=$((count + 1))
+        if [ "$count" -gt 400 ]; then
+            break
+        fi
+        if [[ $line =~ \$wp_local_package[[:space:]]*=[[:space:]]*[\'\"]([A-Za-z_]+)[\'\"] ]]; then
+            value=${BASH_REMATCH[1]}
+            break
+        fi
+    done < "$file"
+    if [ -z "$value" ]; then
+        return 1
+    fi
+    printf '%s' "$value"
+    return 0
+}
+
 detect_integrity_core_version() {
     local site_path=$1
     local file="$site_path/wp-includes/version.php"
@@ -736,6 +760,15 @@ detect_integrity_extra_php_decision() {
         WP2SHELL_INTEGRITY_EXTRA_REASON="de bestandsnaam wordt genoemd in een ander bestand van dit pakket, dus de code kan het bewust laden en verwijderen zou iets kunnen breken"
         return 0
     fi
+    if [ "$kind" = "core" ]; then
+        case $relative in
+            wp-admin/*|wp-includes/*) ;;
+            *)
+                WP2SHELL_INTEGRITY_EXTRA_REASON="het bestand staat los in de webroot en niet in wp-admin of wp-includes. Daar staan ook eigen bestanden van de klant en soms een tweede applicatie, dus dit is geen bevestigde dropper"
+                return 0
+                ;;
+        esac
+    fi
     WP2SHELL_INTEGRITY_EXTRA_CONFIDENCE="$CONFIDENCE_HIGH"
     return 0
 }
@@ -993,8 +1026,14 @@ detect_integrity_check_package() {
     local site_path=$1 kind=$2 slug=$3 version=$4 root=$5 main_file=$6 label=$7
     WP2SHELL_INTEGRITY_PACKAGES_TOTAL=$((WP2SHELL_INTEGRITY_PACKAGES_TOTAL + 1))
     detect_integrity_reset_package_state
-    local manifest=''
-    manifest=$(reference_manifest_for "$kind" "$slug" "$version" 2>/dev/null) || manifest=''
+    local manifest='' locale_argument="$slug"
+    if [ "$kind" = "core" ]; then
+        locale_argument=$(detect_integrity_core_locale "$site_path") || locale_argument=''
+        if [ -n "$locale_argument" ]; then
+            log_debug "Core-taalversie uit version.php: $locale_argument"
+        fi
+    fi
+    manifest=$(reference_manifest_for "$kind" "$locale_argument" "$version" 2>/dev/null) || manifest=''
     if [ -z "$manifest" ] || [ ! -r "$manifest" ]; then
         detect_integrity_report_unverified_package "$site_path" "$kind" "$label" "$root" \
             "de referentie-engine kon voor slug $slug versie $version geen pakket leveren, dat gebeurt bij premiumcode, bij maatwerk, bij een versie die de directory niet kent en ook wanneer het ophalen mislukte" \
