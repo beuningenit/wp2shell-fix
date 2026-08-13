@@ -2541,15 +2541,21 @@ detect_wp_for_site() {
     WP2SHELL_DETECT_WP_ADMIN_TRUNCATED=0
     WP2SHELL_DETECT_WP_DB_STATUS='niet uitgevoerd'
     log_info "WP-CLI- en databasecontroles voor $site_path als gebruiker $owner_user"
-    if ! wp_is_functional "$owner_user" "$site_path"; then
+    local probe_file probe_status=0 probe_reason
+    probe_file=$(detect_wp_work_file wp-probe.out) || probe_file=''
+    wp_is_functional "$owner_user" "$site_path" "$probe_file" || probe_status=$?
+    if [ "$probe_status" -ne 0 ]; then
+        probe_reason=$(wp_probe_failure_reason "$probe_file" "$probe_status")
+        log_error "WP-CLI kan $site_path niet benaderen: $probe_reason"
         record_finding \
+            "evidence=$probe_reason" \
             "site=$site_path" \
             "severity=$SEVERITY_MEDIUM" \
             "confidence=$CONFIDENCE_HIGH" \
             "category=wp-cli-unavailable" \
             "title=WP-CLI kan deze installatie niet benaderen" \
-            "detail=wp core is-installed is mislukt voor deze installatie. Dat wijst op een beschadigde wp-config.php, een databaseserver die niet bereikbaar is, of een installatie die niet meer opstart. Geen van de controles op beheerders, autoloaded opties, geplande taken en core-integriteit heeft daardoor gedraaid. Deze installatie mag niet als schoon gerapporteerd worden." \
-            "remediation=Controleer wp-config.php en de bereikbaarheid van de databaseserver, en draai de scan daarna opnieuw voor deze site." \
+            "detail=wp core is-installed is mislukt voor deze installatie. Dat wijst op een beschadigde wp-config.php, een databaseserver die niet bereikbaar is, een installatie die niet meer opstart, of op de omgeving waarin de toolkit draait: sudo dat niet zonder wachtwoord mag, php dat niet in het pad staat, of een WP-CLI-bestand dat de sitegebruiker niet mag lezen. De bewijsregel bevat de eerste foutmelding van WP-CLI zelf. Geen van de controles op beheerders, autoloaded opties, geplande taken en core-integriteit heeft gedraaid. Deze installatie mag niet als schoon gerapporteerd worden." \
+            "remediation=Lees eerst de bewijsregel. Wijst die op de omgeving, herstel dan sudo, het pad naar php of de leesrechten op WP-CLI. Wijst die op WordPress zelf, controleer dan wp-config.php en de bereikbaarheid van de databaseserver. Draai de scan daarna opnieuw voor deze site." \
             "action=reported"
         rm -rf -- "$work_dir" 2>/dev/null || true
         WP2SHELL_DETECT_WP_WORK_DIR=""
