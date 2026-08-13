@@ -42,7 +42,22 @@ printf 'Tijdslimiet per aanroep: %s\n' "${WP2SHELL_COMMAND_TIMEOUT:-geen}"
 printf 'Configuratie           : %s\n\n' "$WP2SHELL_CONFIG_FILE"
 
 WORK_DIR=$(mktemp -d) || exit 1
-trap 'rm -rf -- "$WORK_DIR"' EXIT INT TERM HUP
+
+diagnose_cleanup() {
+    rm -rf -- "$WORK_DIR" 2>/dev/null || true
+}
+
+diagnose_abort() {
+    local signal=$1
+    diagnose_cleanup
+    trap - "$signal" EXIT
+    kill -s "$signal" "$$"
+}
+
+trap diagnose_cleanup EXIT
+trap 'diagnose_abort INT' INT
+trap 'diagnose_abort TERM' TERM
+trap 'diagnose_abort HUP' HUP
 
 printf '1. sudo zonder wachtwoord naar %s\n' "$OWNER_USER"
 if sudo -n -u "$OWNER_USER" true 2>"$WORK_DIR/sudo.err"; then
