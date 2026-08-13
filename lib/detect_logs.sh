@@ -1029,6 +1029,29 @@ detect_logs_emit_batch_finding() {
     return 0
 }
 
+detect_logs_group_has_success_status() {
+    local key=$1
+    local statuses=${WP2SHELL_LOG_GROUP_STATUSES["$key"]:-}
+    if [ -z "$statuses" ]; then
+        return 2
+    fi
+    local status saw_server_error=0 saw_client_rejection=0
+    for status in $statuses; do
+        case $status in
+            2??|3??) return 0 ;;
+            5??) saw_server_error=1 ;;
+            4??) saw_client_rejection=1 ;;
+        esac
+    done
+    if [ "$saw_server_error" = "1" ]; then
+        return 3
+    fi
+    if [ "$saw_client_rejection" = "1" ]; then
+        return 1
+    fi
+    return 2
+}
+
 detect_logs_emit_sqli_finding() {
     local site_path=$1 key=$2
     local parameter observation scope sample detail
@@ -1040,16 +1063,36 @@ detect_logs_emit_sqli_finding() {
     if [ -n "$sample" ]; then
         detail="$detail Voorbeeldwaarde uit de logregel: $sample"
     fi
+    local severity="$SEVERITY_HIGH" confidence="$CONFIDENCE_HIGH"
+    local title="SQL-injectiepoging via de parameter $parameter"
+    local remediation="Controleer of de installatie gepatcht is, beoordeel de betrokken bestanden en accounts, en ga er bij een geslaagde injectie van uit dat wachtwoordhashes van beheerders uitgelezen zijn."
+    local status_verdict=0
+    detect_logs_group_has_success_status "$key" || status_verdict=$?
+    if [ "$status_verdict" = "1" ]; then
+        severity="$SEVERITY_LOW"
+        confidence="$CONFIDENCE_HEURISTIC"
+        title="Afgewezen SQL-injectiepoging via de parameter $parameter"
+        detail="$detail Alle betrokken verzoeken kregen een 4xx terug, dus de server heeft ze afgewezen voordat de kwetsbare code eraan toekwam. Dat wijst op aftasten door een scanner en niet op een geslaagde injectie."
+        remediation="Geen directe actie nodig zolang de installatie gepatcht is. Controleer wel of er andere sporen zijn."
+    elif [ "$status_verdict" = "3" ]; then
+        confidence="$CONFIDENCE_HEURISTIC"
+        title="SQL-injectiepoging via de parameter $parameter met een serverfout tot gevolg"
+        detail="$detail De betrokken verzoeken kregen een 5xx terug. Dat is geen afwijzing: een serverfout betekent juist dat de aanvraag tot in de code is gekomen en daar is vastgelopen, wat bij een injectiepoging het gevolg kan zijn van de meegestuurde payload zelf. Behandel dit als een serieus signaal en niet als ruis."
+        remediation="Zoek de bijbehorende PHP-fout in het errorlog op, controleer of de installatie gepatcht is, en beoordeel de betrokken bestanden en accounts."
+    elif [ "$status_verdict" = "2" ]; then
+        confidence="$CONFIDENCE_HEURISTIC"
+        detail="$detail In deze logregels staat geen statuscode, dus of het verzoek geslaagd is valt hier niet uit af te leiden."
+    fi
     record_finding \
         "site=$site_path" \
-        "severity=$SEVERITY_HIGH" \
-        "confidence=$CONFIDENCE_HIGH" \
+        "severity=$severity" \
+        "confidence=$confidence" \
         "category=$WP2SHELL_LOG_CATEGORY_PREFIX-sqli-attempt" \
-        "title=SQL-injectiepoging via de parameter $parameter" \
+        "title=$title" \
         "detail=$detail" \
         "file=${WP2SHELL_LOG_GROUP_SOURCE["$key"]:-}" \
         "evidence=${WP2SHELL_LOG_GROUP_EVIDENCE["$key"]:-}" \
-        "remediation=Controleer of de installatie gepatcht is, beoordeel de betrokken bestanden en accounts, en ga er bij een geslaagde injectie van uit dat wachtwoordhashes van beheerders uitgelezen zijn."
+        "remediation=$remediation"
     return 0
 }
 
@@ -1066,18 +1109,39 @@ detect_logs_emit_lfi_finding() {
     else
         severity=$SEVERITY_HIGH
         title='Poging tot uitlezen van wp-config.php via admin-ajax.php'
-        detail="Er zijn verzoeken naar admin-ajax.php gevonden met een template-parameter die via padtraversal naar wp-config.php wijst. De statuscode wijst niet op een geslaagd verzoek, maar het logformaat kan de status ook missen. Bij een geslaagd verzoek zijn de databasegegevens en de authenticatiesalts uit wp-config.php gelezen. $observation $scope"
+        detail="Er zijn verzoeken naar admin-ajax.php gevonden met een template-parameter die via padtraversal naar wp-config.php wijst. Bij een geslaagd verzoek zijn de databasegegevens en de authenticatiesalts uit wp-config.php gelezen. $observation $scope"
+    fi
+    local confidence="$CONFIDENCE_HIGH"
+    local remediation="Roteer het databasewachtwoord, vervang alle salts in wp-config.php zodat lopende sessies ongeldig worden, en reset de wachtwoorden van alle beheerders. Alleen een webshell verwijderen is hier niet voldoende, want de gelekte gegevens blijven anders bruikbaar."
+    if [ "$subtype" != "success" ]; then
+        local status_verdict=0
+        detect_logs_group_has_success_status "$key" || status_verdict=$?
+        if [ "$status_verdict" = "1" ]; then
+            severity=$SEVERITY_LOW
+            confidence="$CONFIDENCE_HEURISTIC"
+            title='Afgewezen poging tot uitlezen van wp-config.php'
+            detail="$detail Alle betrokken verzoeken kregen een 4xx terug, dus de server heeft ze afgewezen voordat de kwetsbare code eraan toekwam. Dat wijst op aftasten door een scanner en niet op een geslaagd uitlezen."
+            remediation="Geen directe actie nodig. Rotatie van gegevens is hier niet aan de orde zolang er geen geslaagd verzoek is."
+        elif [ "$status_verdict" = "3" ]; then
+            confidence="$CONFIDENCE_HEURISTIC"
+            title='Poging tot uitlezen van wp-config.php met een serverfout tot gevolg'
+            detail="$detail De betrokken verzoeken kregen een 5xx terug. Dat is geen afwijzing: de aanvraag is tot in de code gekomen en daar vastgelopen, wat bij padtraversal het gevolg kan zijn van het gevraagde bestand zelf. Ga er niet vanuit dat er niets gelezen is."
+            remediation="Zoek de bijbehorende PHP-fout in het errorlog op en beoordeel of wp-config.php uitgelezen kan zijn. Roteer bij twijfel het databasewachtwoord en alle salts."
+        elif [ "$status_verdict" = "2" ]; then
+            confidence="$CONFIDENCE_HEURISTIC"
+            detail="$detail In deze logregels staat geen statuscode, dus of het verzoek geslaagd is valt hier niet uit af te leiden."
+        fi
     fi
     record_finding \
         "site=$site_path" \
         "severity=$severity" \
-        "confidence=$CONFIDENCE_HIGH" \
+        "confidence=$confidence" \
         "category=$WP2SHELL_LOG_CATEGORY_PREFIX-lfi-wp-config" \
         "title=$title" \
         "detail=$detail" \
         "file=${WP2SHELL_LOG_GROUP_SOURCE["$key"]:-}" \
         "evidence=${WP2SHELL_LOG_GROUP_EVIDENCE["$key"]:-}" \
-        "remediation=Roteer het databasewachtwoord, vervang alle salts in wp-config.php zodat lopende sessies ongeldig worden, en reset de wachtwoorden van alle beheerders. Alleen een webshell verwijderen is hier niet voldoende, want de gelekte gegevens blijven anders bruikbaar."
+        "remediation=$remediation"
     return 0
 }
 

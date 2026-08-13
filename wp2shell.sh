@@ -478,7 +478,7 @@ merge_worker_findings() {
 
 iterate_sites_sequential() {
     local handler=$1
-    local total=0 failed=0 line site_path owner_user target_version rc
+    local total=0 failed=0 line site_path owner_user target_version domain rc
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -486,12 +486,13 @@ iterate_sites_sequential() {
         site_path=$(site_record_field "$line" site_path) || site_path=''
         owner_user=$(site_record_field "$line" effective_user) || owner_user=''
         target_version=$(site_record_field "$line" target_version) || target_version=''
+        domain=$(site_record_field "$line" domain) || domain=''
         if [ -z "$site_path" ] || [ -z "$owner_user" ]; then
             log_warn "Siterecord zonder pad of eigenaar wordt overgeslagen"
             continue
         fi
         total=$((total + 1))
-        ( "$handler" "$site_path" "$owner_user" "$target_version" )
+        ( "$handler" "$site_path" "$owner_user" "$target_version" "$domain" )
         rc=$?
         if [ "$rc" -ne 0 ]; then
             failed=$((failed + 1))
@@ -504,7 +505,7 @@ iterate_sites_sequential() {
 
 iterate_sites_parallel() {
     local handler=$1 jobs=$2
-    local worker_dir total=0 index=0 line site_path owner_user target_version
+    local worker_dir total=0 index=0 line site_path owner_user target_version domain
     worker_dir=$(make_temp_dir wp2shell-workers)
     register_temp_cleanup "$worker_dir"
     local -a pending_paths=()
@@ -515,6 +516,7 @@ iterate_sites_parallel() {
         site_path=$(site_record_field "$line" site_path) || site_path=''
         owner_user=$(site_record_field "$line" effective_user) || owner_user=''
         target_version=$(site_record_field "$line" target_version) || target_version=''
+        domain=$(site_record_field "$line" domain) || domain=''
         if [ -z "$site_path" ] || [ -z "$owner_user" ]; then
             log_warn "Siterecord zonder pad of eigenaar wordt overgeslagen"
             continue
@@ -525,7 +527,7 @@ iterate_sites_parallel() {
         (
             WP2SHELL_FINDINGS_FILE="$worker_dir/$index.ndjson"
             : > "$WP2SHELL_FINDINGS_FILE"
-            "$handler" "$site_path" "$owner_user" "$target_version"
+            "$handler" "$site_path" "$owner_user" "$target_version" "$domain"
             printf '%s' "$?" > "$worker_dir/$index.status"
         ) &
         while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do
@@ -569,12 +571,12 @@ iterate_sites() {
 }
 
 handle_clean_site() {
-    local site_path=$1 owner_user=$2 target_version=$3
-    clean_site "$site_path" "$owner_user" "$OPT_APPLY" "$OPT_REMOVE_ADMINS" "$OPT_MAINTENANCE" "$target_version"
+    local site_path=$1 owner_user=$2 target_version=$3 domain=${4:-}
+    clean_site "$site_path" "$owner_user" "$OPT_APPLY" "$OPT_REMOVE_ADMINS" "$OPT_MAINTENANCE" "$target_version" "$domain"
 }
 
 handle_harden_site() {
-    local site_path=$1 owner_user=$2 target_version=$3
+    local site_path=$1 owner_user=$2 target_version=$3 domain=${4:-}
     local exposed=0
     if [ -n "$target_version" ]; then
         exposed=1

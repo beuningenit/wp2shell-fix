@@ -445,11 +445,29 @@ detect_wp_classify_checksum_line() {
 }
 
 detect_wp_checksum_line_path() {
-    local line=$1 extracted
-    case $line in
-        *': '*) extracted=${line##*': '} ;;
-        *) return 1 ;;
-    esac
+    local line=$1 extracted='' marker
+    for marker in \
+        "File should not exist: " \
+        "File doesn't verify against checksum: " \
+        "File doesn't exist: "
+    do
+        case $line in
+            *"$marker"*)
+                extracted=${line#*"$marker"}
+                break
+                ;;
+        esac
+    done
+    if [ -z "$extracted" ]; then
+        for marker in "should not exist: " "verify against checksum: " "doesn't exist: "; do
+            case $line in
+                *"$marker"*)
+                    extracted=${line#*"$marker"}
+                    break
+                    ;;
+            esac
+        done
+    fi
     extracted=${extracted%$'\r'}
     if [ -z "$extracted" ]; then
         return 1
@@ -587,6 +605,27 @@ detect_wp_content_directory() {
     return 1
 }
 
+detect_wp_path_is_operational_artifact() {
+    local relative=$1
+    local base=${relative##*/}
+    case $base in
+        error_log|php_errorlog|error.log|debug.log|.htaccess|.htpasswd|.maintenance|.ftpquota|.DS_Store|Thumbs.db)
+            return 0
+            ;;
+        robots.txt|ads.txt|app-ads.txt|favicon.ico|sitemap.xml|sitemap_index.xml|browserconfig.xml|humans.txt|security.txt)
+            return 0
+            ;;
+        google*.html|BingSiteAuth.xml|pinterest-*.html|yandex_*.html)
+            return 0
+            ;;
+    esac
+    case $relative in
+        .well-known/*|*/.well-known/*) return 0 ;;
+        *.log|*.log.[0-9]|*.gz) return 0 ;;
+    esac
+    return 1
+}
+
 detect_wp_report_checksum_entry() {
     local site_path=$1 kind=$2 raw_path=$3 line=$4 scope=$5 plugins_dir=$6
     local absolute relative severity confidence category title detail remediation
@@ -594,31 +633,51 @@ detect_wp_report_checksum_entry() {
     absolute=$(detect_wp_absolute_candidate "$raw_path" "$site_path" "$plugins_dir")
     relative=$raw_path
     evidence=$(detect_wp_shorten "$line" 300)
+    if [ -n "$absolute" ] && is_allowlisted_path "$absolute"; then
+        log_debug "Bestand staat op de allowlist en wordt niet gerapporteerd: $absolute"
+        return 0
+    fi
     if [ -f "$absolute" ] && [ ! -L "$absolute" ]; then
         digest=$(file_sha1 "$absolute") || digest=''
         ioc_label=$(detect_wp_file_ioc_label "$absolute") || ioc_label=''
     fi
     case $kind in
         added)
-            category="$scope-file-added"
+            if [ "$scope" = "core" ]; then
+                category="core-file-added"
+            else
+                category="plugin-file-added"
+            fi
             if [ -n "$ioc_label" ]; then
                 severity="$SEVERITY_CRITICAL"
                 confidence="$CONFIDENCE_HIGH"
                 title="Bevestigde webshell aangetroffen op basis van hashvergelijking"
                 detail="Dit bestand hoort niet bij de officiele release en de hash komt overeen met een gepubliceerde IOC ($ioc_label). Dit is geen vermoeden maar een bevestigde besmetting."
                 remediation="Behandel deze site als gecompromitteerd. Plaats het bestand in quarantaine via de opschoonstap, roteer databasewachtwoorden en salts, en controleer alle beheerdersaccounts."
-            elif [ "$scope" = "core" ] && detect_wp_path_is_core_directory "$relative"; then
+            elif detect_wp_path_is_operational_artifact "$relative"; then
+                severity="$SEVERITY_INFO"
+                confidence="$CONFIDENCE_HEURISTIC"
+                title="Bekend beheerbestand dat niet bij de release hoort"
+                detail="Dit bestand komt niet voor in de officiele checksumlijst, maar de naam hoort bij een bekend beheer- of serverartefact. PHP schrijft error_log zelf weg zodra logging aan staat, en DirectAdmin plaatst een eigen .htaccess bij wachtwoordbeveiliging. Dit is vrijwel altijd normaal."
+                remediation="Geen actie nodig, tenzij de inhoud verdacht is."
+            elif [ "$scope" = "core" ] && detect_wp_path_is_core_directory "$relative" && detect_wp_path_is_executable_php "$relative"; then
                 severity="$SEVERITY_CRITICAL"
                 confidence="$CONFIDENCE_HIGH"
-                title="Onbekend bestand in de WordPress-core aangetroffen"
-                detail="wp core verify-checksums meldt dat dit bestand niet in de officiele WordPress-release voorkomt, terwijl het wel in een core-map staat. In deze aanval is een neergezet bestand in de coreboom de meest voorkomende dropper. Let op: verify-checksums controleert nooit wp-content, dus dit onderdeel is geen volledige integriteitscontrole van de hele boom."
+                title="Onbekend PHP-bestand in de WordPress-core aangetroffen"
+                detail="wp core verify-checksums meldt dat dit uitvoerbare PHP-bestand niet in de officiele WordPress-release voorkomt, terwijl het wel in wp-admin of wp-includes staat. Die mappen horen uitsluitend corebestanden te bevatten, dus twee signalen vallen hier samen: het hoort niet bij de release en het is uitvoerbare code op een plek waar niets anders thuishoort. In deze aanval is dat de meest voorkomende dropper. Let op: verify-checksums controleert nooit wp-content, dus dit is geen volledige integriteitscontrole van de hele boom."
                 remediation="Bekijk het bestand en plaats het via de opschoonstap in quarantaine. Verwijder niets met de hand en bewaar het bewijs."
+            elif [ "$scope" = "core" ] && detect_wp_path_is_core_directory "$relative"; then
+                severity="$SEVERITY_HIGH"
+                confidence="$CONFIDENCE_HEURISTIC"
+                title="Onbekend bestand in een core-map aangetroffen"
+                detail="Dit bestand staat in wp-admin of wp-includes maar hoort niet bij de officiele release. Het is geen uitvoerbare PHP, dus het gaat vaak om een logbestand, een backup of een artefact van een plugin. Beoordeel het handmatig."
+                remediation="Controleer de herkomst van dit bestand en zet het zo nodig via de opschoonstap in quarantaine."
             elif detect_wp_path_is_executable_php "$relative"; then
-                severity="$SEVERITY_CRITICAL"
-                confidence="$CONFIDENCE_HIGH"
+                severity="$SEVERITY_HIGH"
+                confidence="$CONFIDENCE_HEURISTIC"
                 title="Onbekend PHP-bestand aangetroffen dat niet bij de release hoort"
-                detail="Dit uitvoerbare PHP-bestand staat wel op schijf maar komt niet voor in de officiele checksumlijst. Drie onafhankelijke signalen vallen hier samen: het bestand hoort niet bij de release, het is uitvoerbare PHP, en het staat binnen de webroot. Een zelf geplaatst maatwerkbestand in de webroot komt hier ook in terecht en moet dan op de allowlist."
-                remediation="Bekijk het bestand en plaats het via de opschoonstap in quarantaine. Verwijder niets met de hand."
+                detail="Dit uitvoerbare PHP-bestand staat op schijf maar komt niet voor in de officiele checksumlijst. Let op dat verify-checksums met --include-root de hele webroot doorloopt, dus een tweede applicatie naast WordPress, een hernoemde contentmap of een eigen maatwerkbestand komt hier ook in terecht. Daarom blijft dit heuristisch en gaat het niet automatisch in quarantaine."
+                remediation="Beoordeel de herkomst van dit bestand. Hoort het bij de klant, zet het dan op de allowlist in de configuratie."
             else
                 severity="$SEVERITY_MEDIUM"
                 confidence="$CONFIDENCE_HEURISTIC"
@@ -628,7 +687,11 @@ detect_wp_report_checksum_entry() {
             fi
             ;;
         modified)
-            category="$scope-file-modified"
+            if [ "$scope" = "core" ]; then
+                category="core-file-modified"
+            else
+                category="plugin-file-modified"
+            fi
             if [ "$scope" = "core" ]; then
                 severity="$SEVERITY_HIGH"
                 confidence="$CONFIDENCE_HIGH"
@@ -644,7 +707,11 @@ detect_wp_report_checksum_entry() {
             fi
             ;;
         missing)
-            category="$scope-file-missing"
+            if [ "$scope" = "core" ]; then
+                category="core-file-missing"
+            else
+                category="plugin-file-missing"
+            fi
             severity="$SEVERITY_MEDIUM"
             confidence="$CONFIDENCE_HEURISTIC"
             title="Bestand uit de officiele release ontbreekt"

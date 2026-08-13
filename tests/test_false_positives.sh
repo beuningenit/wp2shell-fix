@@ -8,6 +8,9 @@ REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 . "$REPO_ROOT/lib/discovery.sh"
 . "$REPO_ROOT/lib/detect_files.sh"
 . "$REPO_ROOT/lib/detect_logs.sh"
+. "$REPO_ROOT/lib/quarantine.sh"
+. "$REPO_ROOT/lib/harden.sh"
+. "$REPO_ROOT/lib/clean.sh"
 
 detect_optional_commands
 resolve_external_tools >/dev/null 2>&1
@@ -108,6 +111,34 @@ expect_equal "een vervalste 207 in het requestveld wordt niet geloofd" "404" \
     "$(detect_logs_extract_status '1.2.3.4 - - [x] "GET /x?a=\" 207 1 HTTP/1.1" 404 12')"
 expect_equal "een streepje als bytecount breekt de statusparsing niet" "200" \
     "$(detect_logs_extract_status '1.2.3.4 - - [x] "GET / HTTP/1.1" 200 -')"
+
+status_verdict_for() {
+    local statuses=$1
+    WP2SHELL_LOG_GROUP_STATUSES["proef"]="$statuses"
+    local verdict=0
+    detect_logs_group_has_success_status "proef" || verdict=$?
+    printf '%s' "$verdict"
+}
+
+expect_equal "een 2xx geldt als geslaagd" "0" "$(status_verdict_for '200')"
+expect_equal "alleen 4xx geldt als afgewezen" "1" "$(status_verdict_for '404 403')"
+expect_equal "een 5xx geldt niet als afgewezen" "3" "$(status_verdict_for '500')"
+expect_equal "een 5xx naast een 4xx blijft een serverfout" "3" "$(status_verdict_for '404 500')"
+expect_equal "een 2xx wint van alles" "0" "$(status_verdict_for '404 500 200')"
+expect_equal "zonder status is er geen oordeel" "2" "$(status_verdict_for '')"
+
+expect_equal "een gewijzigd corebestand blokkeert het schoon-oordeel" "ja" \
+    "$(category_blocks_clean_verdict "core-file-modified" && printf 'ja' || printf 'nee')"
+expect_equal "een mislukte core-restore blokkeert het schoon-oordeel" "ja" \
+    "$(category_blocks_clean_verdict "core-restore-failed" && printf 'ja' || printf 'nee')"
+expect_equal "een beheerder uit het venster blokkeert het schoon-oordeel" "ja" \
+    "$(category_blocks_clean_verdict "admin-created-in-exposure-window" && printf 'ja' || printf 'nee')"
+expect_equal "een bestand in quarantaine blokkeert het schoon-oordeel" "ja" \
+    "$(category_blocks_clean_verdict "php-in-writable-directory" && printf 'ja' || printf 'nee')"
+expect_equal "een heuristisch codepatroon blokkeert het schoon-oordeel niet" "nee" \
+    "$(category_blocks_clean_verdict "suspicious-code" && printf 'ja' || printf 'nee')"
+expect_equal "een informatieve bevinding blokkeert het schoon-oordeel niet" "nee" \
+    "$(category_blocks_clean_verdict "log-missing" && printf 'ja' || printf 'nee')"
 
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
