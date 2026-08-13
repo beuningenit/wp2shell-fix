@@ -140,6 +140,28 @@ expect_equal "een heuristisch codepatroon blokkeert het schoon-oordeel niet" "ne
 expect_equal "een informatieve bevinding blokkeert het schoon-oordeel niet" "nee" \
     "$(category_blocks_clean_verdict "log-missing" && printf 'ja' || printf 'nee')"
 
+expect_equal "een onbereikbare WP-CLI maakt de controle blind" "ja" \
+    "$(category_indicates_blind_spot "wp-cli-unavailable" && printf 'ja' || printf 'nee')"
+expect_equal "een mislukte checksumcontrole maakt de controle blind" "ja" \
+    "$(category_indicates_blind_spot "core-checksums-unavailable" && printf 'ja' || printf 'nee')"
+expect_equal "een onvolledige inventarisatie maakt de controle blind" "ja" \
+    "$(category_indicates_blind_spot "scan-incomplete" && printf 'ja' || printf 'nee')"
+expect_equal "een gewone bevinding maakt de controle niet blind" "nee" \
+    "$(category_indicates_blind_spot "php-in-writable-directory" && printf 'ja' || printf 'nee')"
+
+BLIND_FIXTURE="$FIXTURE/blind.ndjson"
+{
+    printf '{"category":"wp-cli-unavailable","confidence":"heuristic"}\n'
+    printf '{"category":"log-missing","confidence":"high-confidence"}\n'
+    printf '{"category":"wp-cli-unavailable","confidence":"heuristic"}\n'
+} > "$BLIND_FIXTURE"
+expect_equal "blinde vlekken worden ontdubbeld gemeld" "wp-cli-unavailable" \
+    "$(collect_verification_blind_spots "$BLIND_FIXTURE")"
+
+printf '{"category":"log-missing","confidence":"high-confidence"}\n' > "$BLIND_FIXTURE"
+expect_equal "zonder blinde vlekken is de lijst leeg" "" \
+    "$(collect_verification_blind_spots "$BLIND_FIXTURE")"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
