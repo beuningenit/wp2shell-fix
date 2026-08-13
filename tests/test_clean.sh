@@ -103,13 +103,14 @@ expect_equal "de mislukte backup is gerapporteerd" "1" \
     "$("${WP2SHELL_GREP:-grep}" -c 'backup-failed' "$WP2SHELL_FINDINGS_FILE" || true)"
 
 EMITTED=$(mktemp)
-"${WP2SHELL_GREP:-grep}" -ohE '"category=[a-z0-9-]+"' "$REPO_ROOT"/lib/detect_*.sh \
-    | sed 's/"category=//; s/"//' | sort -u > "$EMITTED"
+{
+    "${WP2SHELL_GREP:-grep}" -ohE '"category=[a-z0-9-]+"' "$REPO_ROOT"/lib/detect_*.sh \
+        | sed 's/"category=//; s/"//'
+    "${WP2SHELL_GREP:-grep}" -ohE '^[[:space:]]*category="[a-z0-9-]+"' "$REPO_ROOT"/lib/detect_*.sh \
+        | sed 's/.*category="//; s/"//'
+} | sort -u > "$EMITTED"
 
 for category in "${WP2SHELL_AUTO_QUARANTINE_CATEGORIES[@]}"; do
-    if [ "$category" = "core-extra-file" ]; then
-        continue
-    fi
     tests_run=$((tests_run + 1))
     if "${WP2SHELL_GREP:-grep}" -qx "$category" "$EMITTED"; then
         printf 'ok   auto-quarantaine categorie %s wordt echt uitgegeven\n' "$category"

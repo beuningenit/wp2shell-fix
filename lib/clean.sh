@@ -7,6 +7,7 @@ WP2SHELL_AUTO_QUARANTINE_CATEGORIES=(
     "malicious-plugin-structure"
     "wp2shell-rest-namespace"
     "user-ini-auto-prepend"
+    "core-file-added"
 )
 
 category_is_auto_quarantinable() {
@@ -350,8 +351,104 @@ clean_injected_configuration() {
     return 0
 }
 
+rerun_detection_into() {
+    local site_path=$1 owner_user=$2 domain=$3 destination=$4
+    local previous_findings=${WP2SHELL_FINDINGS_FILE:-}
+    : > "$destination"
+    WP2SHELL_FINDINGS_FILE="$destination"
+    if declare -F detect_files_for_site >/dev/null 2>&1; then
+        detect_files_for_site "$site_path" "$owner_user" >/dev/null 2>&1 || true
+    fi
+    if declare -F detect_wp_for_site >/dev/null 2>&1; then
+        detect_wp_for_site "$site_path" "$owner_user" "$domain" >/dev/null 2>&1 || true
+    fi
+    WP2SHELL_FINDINGS_FILE="$previous_findings"
+    return 0
+}
+
+count_actionable_findings_in() {
+    local findings_file=$1
+    if [ ! -s "$findings_file" ]; then
+        printf '0'
+        return 0
+    fi
+    local line confidence category count=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        confidence=$(json_extract_field "$line" confidence) || confidence=''
+        if [ "$confidence" != "$CONFIDENCE_HIGH" ]; then
+            continue
+        fi
+        category=$(json_extract_field "$line" category) || category=''
+        if category_is_auto_quarantinable "$category"; then
+            count=$((count + 1))
+        fi
+    done < "$findings_file"
+    printf '%s' "$count"
+    return 0
+}
+
+verify_site_after_clean() {
+    local site_path=$1 owner_user=$2 domain=$3
+    local recheck remaining
+    recheck=$(mktemp -t wp2shell-verify.XXXXXXXX) || return 1
+    register_temp_cleanup "$recheck"
+    log_info "Controle na het opschonen van $site_path"
+    rerun_detection_into "$site_path" "$owner_user" "$domain" "$recheck"
+    remaining=$(count_actionable_findings_in "$recheck")
+    if [ "$remaining" = "0" ]; then
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_INFO" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=cleanup-verified" \
+            "title=Na het opschonen zijn er geen bevestigde besmettingen meer gevonden" \
+            "detail=Deze installatie is na het opschonen opnieuw gescand en er staan geen bestanden meer op die met hoge zekerheid kwaadaardig zijn. Dat betekent niet automatisch dat de site veilig is: als deze site tijdens het kwetsbare venster bereikbaar was, kunnen inloggegevens al uitgelezen zijn en moeten die met de hand vervangen worden." \
+            "action=verified"
+        log_info "Controle geslaagd, geen bevestigde besmettingen meer op $site_path"
+        return 0
+    fi
+    local line file_path category
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        if [ "$(json_extract_field "$line" confidence)" != "$CONFIDENCE_HIGH" ]; then
+            continue
+        fi
+        category=$(json_extract_field "$line" category) || category=''
+        if ! category_is_auto_quarantinable "$category"; then
+            continue
+        fi
+        file_path=$(json_extract_field "$line" file_path) || file_path=''
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_CRITICAL" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=cleanup-incomplete-item" \
+            "title=Dit bestand staat er na het opschonen nog steeds" \
+            "detail=Na het opschonen is deze installatie opnieuw gescand en dit artefact is opnieuw gevonden. Het is dus niet in quarantaine geplaatst, bijvoorbeeld door ontbrekende rechten, of het is opnieuw aangemaakt door iets dat nog actief is." \
+            "file=$file_path" \
+            "evidence=$category" \
+            "remediation=Onderzoek dit bestand met de hand. Wordt het opnieuw aangemaakt, dan draait er nog een proces of een taak die eerst gestopt moet worden."
+    done < "$recheck"
+    record_finding \
+        "site=$site_path" \
+        "severity=$SEVERITY_CRITICAL" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=cleanup-incomplete" \
+        "title=Deze installatie is na het opschonen nog niet schoon" \
+        "detail=Er zijn na het opschonen nog $remaining bevestigde artefacten aanwezig. Deze site mag niet als opgeschoond beschouwd worden." \
+        "remediation=Behandel deze site met voorrang handmatig."
+    log_error "Controle mislukt, $remaining bevestigde artefacten blijven staan op $site_path"
+    return 1
+}
+
 clean_site() {
     local site_path=$1 owner_user=$2 apply=$3 remove_admins=$4 maintenance=$5 target_version=$6
+    local domain=${7:-}
     log_info "Opschonen van $site_path"
     if [ "$apply" = "1" ]; then
         if ! ensure_backup_before_changes "$site_path" "$owner_user"; then
@@ -366,11 +463,18 @@ clean_site() {
     quarantine_findings_for_site "$site_path" "$owner_user" "$apply" || true
     handle_rogue_administrators "$site_path" "$owner_user" "$apply" "$remove_admins" || true
     clean_injected_configuration "$site_path" "$apply" || true
+    local verification_status=0
+    if [ "$apply" = "1" ]; then
+        verify_site_after_clean "$site_path" "$owner_user" "$domain" || verification_status=1
+    fi
     if [ "$apply" = "1" ] && [ "$maintenance" = "1" ]; then
         maintenance_mode_deactivate "$site_path" "$owner_user"
     fi
     if [ "$apply" = "1" ]; then
         report_manual_credential_rotation "$site_path"
+    fi
+    if [ "$verification_status" != "0" ]; then
+        return 1
     fi
     return 0
 }

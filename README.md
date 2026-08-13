@@ -82,6 +82,17 @@ Opschonen. Zonder `--apply` wordt er nog steeds niets gewijzigd, dan zie je alle
 /opt/wp2shell/wp2shell.sh clean --site /home/klant/domains/voorbeeld.nl/public_html --apply
 ```
 
+Alle installaties op de server in een keer opschonen:
+
+```bash
+/opt/wp2shell/wp2shell.sh clean --apply
+```
+
+Elke site wordt afzonderlijk behandeld: eerst een backup, dan opschonen, en daarna een
+controlescan. Die controle is het punt waarop een site pas als opgeschoond geldt. Blijft er iets
+staan, dan meldt het rapport die site expliciet als nog niet schoon in plaats van als klaar. Een
+fout op de ene site stopt de andere sites niet.
+
 Hardening toepassen:
 
 ```bash

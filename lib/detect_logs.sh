@@ -1029,6 +1029,21 @@ detect_logs_emit_batch_finding() {
     return 0
 }
 
+detect_logs_group_has_success_status() {
+    local key=$1
+    local statuses=${WP2SHELL_LOG_GROUP_STATUSES["$key"]:-}
+    if [ -z "$statuses" ]; then
+        return 2
+    fi
+    local status
+    for status in $statuses; do
+        case $status in
+            2??|3??) return 0 ;;
+        esac
+    done
+    return 1
+}
+
 detect_logs_emit_sqli_finding() {
     local site_path=$1 key=$2
     local parameter observation scope sample detail
@@ -1040,16 +1055,31 @@ detect_logs_emit_sqli_finding() {
     if [ -n "$sample" ]; then
         detail="$detail Voorbeeldwaarde uit de logregel: $sample"
     fi
+    local severity="$SEVERITY_HIGH" confidence="$CONFIDENCE_HIGH"
+    local title="SQL-injectiepoging via de parameter $parameter"
+    local remediation="Controleer of de installatie gepatcht is, beoordeel de betrokken bestanden en accounts, en ga er bij een geslaagde injectie van uit dat wachtwoordhashes van beheerders uitgelezen zijn."
+    local status_verdict=0
+    detect_logs_group_has_success_status "$key" || status_verdict=$?
+    if [ "$status_verdict" = "1" ]; then
+        severity="$SEVERITY_LOW"
+        confidence="$CONFIDENCE_HEURISTIC"
+        title="Afgewezen SQL-injectiepoging via de parameter $parameter"
+        detail="$detail Alle betrokken verzoeken kregen een foutstatus terug, dus de server heeft ze afgewezen. Dat wijst op aftasten door een scanner en niet op een geslaagde injectie."
+        remediation="Geen directe actie nodig zolang de installatie gepatcht is. Controleer wel of er andere sporen zijn."
+    elif [ "$status_verdict" = "2" ]; then
+        confidence="$CONFIDENCE_HEURISTIC"
+        detail="$detail In deze logregels staat geen statuscode, dus of het verzoek geslaagd is valt hier niet uit af te leiden."
+    fi
     record_finding \
         "site=$site_path" \
-        "severity=$SEVERITY_HIGH" \
-        "confidence=$CONFIDENCE_HIGH" \
+        "severity=$severity" \
+        "confidence=$confidence" \
         "category=$WP2SHELL_LOG_CATEGORY_PREFIX-sqli-attempt" \
-        "title=SQL-injectiepoging via de parameter $parameter" \
+        "title=$title" \
         "detail=$detail" \
         "file=${WP2SHELL_LOG_GROUP_SOURCE["$key"]:-}" \
         "evidence=${WP2SHELL_LOG_GROUP_EVIDENCE["$key"]:-}" \
-        "remediation=Controleer of de installatie gepatcht is, beoordeel de betrokken bestanden en accounts, en ga er bij een geslaagde injectie van uit dat wachtwoordhashes van beheerders uitgelezen zijn."
+        "remediation=$remediation"
     return 0
 }
 
@@ -1066,18 +1096,34 @@ detect_logs_emit_lfi_finding() {
     else
         severity=$SEVERITY_HIGH
         title='Poging tot uitlezen van wp-config.php via admin-ajax.php'
-        detail="Er zijn verzoeken naar admin-ajax.php gevonden met een template-parameter die via padtraversal naar wp-config.php wijst. De statuscode wijst niet op een geslaagd verzoek, maar het logformaat kan de status ook missen. Bij een geslaagd verzoek zijn de databasegegevens en de authenticatiesalts uit wp-config.php gelezen. $observation $scope"
+        detail="Er zijn verzoeken naar admin-ajax.php gevonden met een template-parameter die via padtraversal naar wp-config.php wijst. Bij een geslaagd verzoek zijn de databasegegevens en de authenticatiesalts uit wp-config.php gelezen. $observation $scope"
+    fi
+    local confidence="$CONFIDENCE_HIGH"
+    local remediation="Roteer het databasewachtwoord, vervang alle salts in wp-config.php zodat lopende sessies ongeldig worden, en reset de wachtwoorden van alle beheerders. Alleen een webshell verwijderen is hier niet voldoende, want de gelekte gegevens blijven anders bruikbaar."
+    if [ "$subtype" != "success" ]; then
+        local status_verdict=0
+        detect_logs_group_has_success_status "$key" || status_verdict=$?
+        if [ "$status_verdict" = "1" ]; then
+            severity=$SEVERITY_LOW
+            confidence="$CONFIDENCE_HEURISTIC"
+            title='Afgewezen poging tot uitlezen van wp-config.php'
+            detail="$detail Alle betrokken verzoeken kregen een foutstatus terug, dus de server heeft ze afgewezen. Dat wijst op aftasten door een scanner en niet op een geslaagd uitlezen."
+            remediation="Geen directe actie nodig. Rotatie van gegevens is hier niet aan de orde zolang er geen geslaagd verzoek is."
+        elif [ "$status_verdict" = "2" ]; then
+            confidence="$CONFIDENCE_HEURISTIC"
+            detail="$detail In deze logregels staat geen statuscode, dus of het verzoek geslaagd is valt hier niet uit af te leiden."
+        fi
     fi
     record_finding \
         "site=$site_path" \
         "severity=$severity" \
-        "confidence=$CONFIDENCE_HIGH" \
+        "confidence=$confidence" \
         "category=$WP2SHELL_LOG_CATEGORY_PREFIX-lfi-wp-config" \
         "title=$title" \
         "detail=$detail" \
         "file=${WP2SHELL_LOG_GROUP_SOURCE["$key"]:-}" \
         "evidence=${WP2SHELL_LOG_GROUP_EVIDENCE["$key"]:-}" \
-        "remediation=Roteer het databasewachtwoord, vervang alle salts in wp-config.php zodat lopende sessies ongeldig worden, en reset de wachtwoorden van alle beheerders. Alleen een webshell verwijderen is hier niet voldoende, want de gelekte gegevens blijven anders bruikbaar."
+        "remediation=$remediation"
     return 0
 }
 
