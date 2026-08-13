@@ -19,7 +19,8 @@ Dit is een defensieve toolkit. Er wordt geen exploitcode geschreven, opgenomen o
 
 De opgeleverde scripts bevatten geen commentaarregels. Uitzonderingen, en alleen deze:
 
-- De shebang (`#!/bin/bash`). Dat is geen commentaar maar een kernel-directive.
+- De shebang (`#!/bin/bash`). Dat is geen commentaar maar een kernel-directive, waar hij ook staat.
+  Testbestanden genereren soms een hulpscript met een eigen shebang in een heredoc; die telt ook mee.
 - `# BEGIN wp2shell` / `# END wp2shell` markers in gegenereerde `.htaccess`-payloads. Die zijn functioneel:
   ze maken idempotente vervanging van het blok mogelijk, net als WordPress' eigen
   `# BEGIN WordPress` blok.

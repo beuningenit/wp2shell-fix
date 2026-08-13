@@ -1,5 +1,7 @@
 WP2SHELL_DETECT_WP_LOADED=1
 
+WP2SHELL_DETECT_WP_FAILED_CHECKS=()
+
 WP2SHELL_DETECT_WP_MODULE_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ]; then
     WP2SHELL_DETECT_WP_MODULE_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) \
@@ -1838,7 +1840,15 @@ detect_wp_scheduled_tasks() {
         return 0
     fi
     if ! detect_wp_json_objects_to_lines "$cron_file" > "$rows_file" 2>/dev/null; then
-        return 0
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_MEDIUM" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=cron-list-unparsable" \
+            "title=De lijst met geplande taken was niet te lezen" \
+            "detail=wp cron event list leverde uitvoer op die niet als JSON te verwerken was. Geplande taken zijn een gangbare plek voor persistentie, dus dit onderdeel is niet gecontroleerd en deze installatie mag op dit punt niet als schoon gelden." \
+            "remediation=Draai wp cron event list handmatig op deze site en bekijk waarom de uitvoer afwijkt."
+        return 1
     fi
     local -a unknown_hooks=() random_hooks=()
     local -A seen_hooks=()
@@ -2104,6 +2114,38 @@ detect_wp_report_admin_truncation() {
     return 0
 }
 
+detect_wp_run_child_check() {
+    local label=$1
+    shift
+    local status=0
+    "$@" || status=$?
+    if [ "$status" -ne 0 ]; then
+        log_warn "$label is voortijdig gestopt met exitcode $status"
+        WP2SHELL_DETECT_WP_FAILED_CHECKS+=("$label")
+    fi
+    return 0
+}
+
+detect_wp_report_incomplete_checks() {
+    local site_path=$1
+    if [ "${#WP2SHELL_DETECT_WP_FAILED_CHECKS[@]}" -eq 0 ]; then
+        return 0
+    fi
+    local joined
+    joined=$(printf '%s, ' "${WP2SHELL_DETECT_WP_FAILED_CHECKS[@]}")
+    joined=${joined%, }
+    record_finding \
+        "site=$site_path" \
+        "severity=$SEVERITY_MEDIUM" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=wp-checks-incomplete" \
+        "title=Niet alle WordPress-controles zijn afgerond" \
+        "detail=De volgende controles zijn voortijdig gestopt: $joined. Wat die controles hadden kunnen vinden is dus onbekend, en deze installatie mag op die punten niet als schoon gelden." \
+        "evidence=$joined" \
+        "remediation=Bekijk het runlogboek voor de oorzaak en draai de scan opnieuw voor deze site."
+    return 0
+}
+
 detect_wp_report_scan_scope() {
     local site_path=$1 cli_version=$2
     detect_wp_report_admin_truncation "$site_path"
@@ -2186,24 +2228,26 @@ detect_wp_for_site() {
     fi
     local cli_version=''
     cli_version=$(detect_wp_cli_version "$site_path" "$owner_user") || cli_version=''
-    detect_wp_core_checksums "$site_path" "$owner_user" \
-        || log_warn "Core-integriteitscontrole is voortijdig gestopt voor $site_path"
-    detect_wp_plugin_checksums "$site_path" "$owner_user" \
-        || log_warn "Plugin-integriteitscontrole is voortijdig gestopt voor $site_path"
-    detect_wp_theme_checksum_gap "$site_path" "$owner_user" \
-        || log_warn "Themacontrole is voortijdig gestopt voor $site_path"
-    detect_wp_administrator_accounts "$site_path" "$owner_user" \
-        || log_warn "Beheerderscontrole is voortijdig gestopt voor $site_path"
-    detect_wp_check_active_plugins "$site_path" "$owner_user" \
-        || log_warn "Controle van actieve plugins is voortijdig gestopt voor $site_path"
-    detect_wp_database_persistence "$site_path" "$owner_user" "$expected_domain" \
-        || log_warn "Databasecontroles zijn voortijdig gestopt voor $site_path"
-    detect_wp_scheduled_tasks "$site_path" "$owner_user" \
-        || log_warn "Controle van geplande taken is voortijdig gestopt voor $site_path"
-    detect_wp_auto_update_posture "$site_path" \
-        || log_warn "Controle op automatische updates is voortijdig gestopt voor $site_path"
-    detect_wp_object_cache_context "$site_path" "$owner_user" \
-        || log_warn "Controle op de object cache is voortijdig gestopt voor $site_path"
+    WP2SHELL_DETECT_WP_FAILED_CHECKS=()
+    detect_wp_run_child_check "core-integriteit" \
+        detect_wp_core_checksums "$site_path" "$owner_user"
+    detect_wp_run_child_check "plugin-integriteit" \
+        detect_wp_plugin_checksums "$site_path" "$owner_user"
+    detect_wp_run_child_check "themacontrole" \
+        detect_wp_theme_checksum_gap "$site_path" "$owner_user"
+    detect_wp_run_child_check "beheerdersaccounts" \
+        detect_wp_administrator_accounts "$site_path" "$owner_user"
+    detect_wp_run_child_check "actieve plugins" \
+        detect_wp_check_active_plugins "$site_path" "$owner_user"
+    detect_wp_run_child_check "databasepersistentie" \
+        detect_wp_database_persistence "$site_path" "$owner_user" "$expected_domain"
+    detect_wp_run_child_check "geplande taken" \
+        detect_wp_scheduled_tasks "$site_path" "$owner_user"
+    detect_wp_run_child_check "automatische updates" \
+        detect_wp_auto_update_posture "$site_path"
+    detect_wp_run_child_check "object cache" \
+        detect_wp_object_cache_context "$site_path" "$owner_user"
+    detect_wp_report_incomplete_checks "$site_path"
     detect_wp_report_scan_scope "$site_path" "$cli_version" \
         || log_warn "Kon de reikwijdte van de controles niet vastleggen voor $site_path"
     rm -rf -- "$work_dir" 2>/dev/null || true

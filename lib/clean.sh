@@ -452,6 +452,8 @@ WP2SHELL_VERIFICATION_BLIND_CATEGORIES=(
     "db-active-plugins-unavailable"
     "db-siteurl-unverified"
     "cron-list-unavailable"
+    "cron-list-unparsable"
+    "wp-checks-incomplete"
     "wp-config-unreadable"
     "admin-list-unavailable"
     "admin-list-unparsable"
