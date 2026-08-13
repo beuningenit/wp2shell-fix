@@ -26,17 +26,19 @@ printf 'Draait als: %s\n\n' "$(id -un)"
 
 detect_optional_commands >/dev/null 2>&1
 
+WORK_DIR=$(mktemp -d) || exit 1
+trap 'rm -rf -- "$WORK_DIR"' EXIT INT TERM HUP
+
 printf '1. sudo zonder wachtwoord naar %s\n' "$OWNER_USER"
-if sudo -n -u "$OWNER_USER" true 2>/tmp/wp2shell-diag.$$; then
+if sudo -n -u "$OWNER_USER" true 2>"$WORK_DIR/sudo.err"; then
     printf '   in orde\n'
 else
-    printf '   MISLUKT: %s\n' "$(head -1 /tmp/wp2shell-diag.$$)"
+    printf '   MISLUKT: %s\n' "$(head -1 "$WORK_DIR/sudo.err")"
     printf '   Zonder dit kan de toolkit niets als de sitegebruiker doen.\n'
 fi
-rm -f /tmp/wp2shell-diag.$$ 2>/dev/null || true
 
 printf '\n2. php in het pad van de sitegebruiker\n'
-php_path=$(sudo -n -u "$OWNER_USER" env PATH=/usr/local/bin:/usr/bin:/bin command -v php 2>/dev/null) || php_path=''
+php_path=$(sudo -n -u "$OWNER_USER" env PATH=/usr/local/bin:/usr/bin:/bin sh -c 'command -v php' 2>/dev/null) || php_path=''
 if [ -n "$php_path" ]; then
     printf '   gevonden op %s\n' "$php_path"
     printf '   versie: %s\n' "$(sudo -n -u "$OWNER_USER" env PATH=/usr/local/bin:/usr/bin:/bin php -r 'echo PHP_VERSION;' 2>&1 | head -1)"
@@ -67,7 +69,7 @@ else
 fi
 
 printf '\n4. wp core is-installed, precies zoals de toolkit hem draait\n'
-probe=$(mktemp)
+probe="$WORK_DIR/probe.out"
 status=0
 wp_is_functional "$OWNER_USER" "$SITE_PATH" "$probe" || status=$?
 printf '   exitcode: %s\n' "$status"
@@ -77,8 +79,9 @@ if [ -s "$probe" ]; then
 else
     printf '   geen uitvoer\n'
 fi
-printf '   duiding: %s\n' "$(wp_probe_failure_reason "$probe" "$status")"
-rm -f -- "$probe" 2>/dev/null || true
+if [ "$status" -ne 0 ]; then
+    printf '   duiding: %s\n' "$(wp_probe_failure_reason "$probe" "$status")"
+fi
 
 if [ "$status" -eq 0 ]; then
     printf '\nWP-CLI werkt voor deze site. Een backup zou nu moeten slagen.\n'
