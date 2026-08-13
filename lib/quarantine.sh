@@ -171,7 +171,9 @@ preview_restore_from_manifest() {
         log_error "Geen manifest gevonden: $manifest"
         return 1
     fi
-    local line original stored candidates=0
+    local line original stored record_site candidates=0
+    local manifest_files_root
+    manifest_files_root="$(dirname -- "$manifest")/files"
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -179,6 +181,15 @@ preview_restore_from_manifest() {
         original=$(json_extract_field "$line" original_path) || original=''
         stored=$(json_extract_field "$line" stored_path) || stored=''
         if [ -z "$original" ] || [ -z "$stored" ]; then
+            continue
+        fi
+        if ! path_is_lexically_within "$stored" "$manifest_files_root"; then
+            log_warn "Zou geweigerd worden, verwijst buiten de eigen quarantainemap: $stored"
+            continue
+        fi
+        record_site=$(json_extract_field "$line" site_path) || record_site=''
+        if [ -z "$record_site" ] || ! path_is_lexically_within "$original" "$record_site"; then
+            log_warn "Zou geweigerd worden, wijst buiten de installatie: $original"
             continue
         fi
         if [ -n "$selector" ]; then
@@ -206,7 +217,9 @@ restore_from_manifest() {
         log_error "Geen manifest gevonden: $manifest"
         return 1
     fi
-    local line original stored restored_count=0 failed_count=0 skipped_count=0
+    local line original stored record_site restored_count=0 failed_count=0 skipped_count=0
+    local manifest_files_root
+    manifest_files_root="$(dirname -- "$manifest")/files"
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -214,6 +227,17 @@ restore_from_manifest() {
         original=$(json_extract_field "$line" original_path) || original=''
         stored=$(json_extract_field "$line" stored_path) || stored=''
         if [ -z "$original" ] || [ -z "$stored" ]; then
+            continue
+        fi
+        if ! path_is_lexically_within "$stored" "$manifest_files_root"; then
+            log_error "Geweigerd, dit manifest verwijst naar een bestand buiten zijn eigen quarantainemap: $stored"
+            failed_count=$((failed_count + 1))
+            continue
+        fi
+        record_site=$(json_extract_field "$line" site_path) || record_site=''
+        if [ -z "$record_site" ] || ! path_is_lexically_within "$original" "$record_site"; then
+            log_error "Geweigerd, dit manifest wil een bestand buiten de installatie terugzetten: $original"
+            failed_count=$((failed_count + 1))
             continue
         fi
         if [ -n "$selector" ]; then

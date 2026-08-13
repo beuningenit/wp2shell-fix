@@ -245,12 +245,20 @@ setup_run_environment() {
     WP2SHELL_SITES_FILE="$WP2SHELL_RUN_DIR/sites.ndjson"
     WP2SHELL_REPORT_JSON="$WP2SHELL_RUN_DIR/report.json"
     WP2SHELL_REPORT_TEXT="$WP2SHELL_RUN_DIR/samenvatting.txt"
-    if [ ! -e "$WP2SHELL_FINDINGS_FILE" ]; then
-        : > "$WP2SHELL_FINDINGS_FILE"
-    fi
-    if [ ! -e "$WP2SHELL_SITES_FILE" ]; then
-        : > "$WP2SHELL_SITES_FILE"
-    fi
+    case $OPT_SUBCOMMAND in
+        report|restore)
+            if [ ! -e "$WP2SHELL_FINDINGS_FILE" ]; then
+                : > "$WP2SHELL_FINDINGS_FILE"
+            fi
+            if [ ! -e "$WP2SHELL_SITES_FILE" ]; then
+                : > "$WP2SHELL_SITES_FILE"
+            fi
+            ;;
+        *)
+            : > "$WP2SHELL_FINDINGS_FILE"
+            : > "$WP2SHELL_SITES_FILE"
+            ;;
+    esac
     WP2SHELL_STARTED_AT=$(timestamp_iso)
     return 0
 }
@@ -668,7 +676,7 @@ command_restore() {
     manifests=$(mktemp -t wp2shell-restore.XXXXXXXX) || return "$EXIT_INTERNAL"
     register_temp_cleanup "$manifests"
     local find_status=0
-    "${WP2SHELL_FIND:-find}" -P "$quarantine_root" -type f -name 'manifest.ndjson' -print0 > "$manifests" 2>/dev/null || find_status=$?
+    "${WP2SHELL_FIND:-find}" -P "$quarantine_root" -mindepth 2 -maxdepth 2 -type f -name 'manifest.ndjson' -print0 > "$manifests" 2>/dev/null || find_status=$?
     if [ "$find_status" -ne 0 ]; then
         log_error "Het doorzoeken van $quarantine_root gaf exitcode $find_status, de lijst met manifesten is mogelijk onvolledig"
         log_error "Er wordt niets teruggezet, want een onvolledige lijst laat bestanden ongemerkt in quarantaine staan"

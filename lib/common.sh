@@ -314,6 +314,22 @@ json_extract_field() {
     esac
 }
 
+path_is_lexically_within() {
+    local candidate=$1 base=$2
+    case $candidate in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case $candidate in
+        *"/../"*|*/..) return 1 ;;
+    esac
+    base=${base%/}
+    case $candidate in
+        "$base"/*) return 0 ;;
+    esac
+    return 1
+}
+
 path_is_within() {
     local resolved_candidate resolved_parent
     if ! resolved_candidate=$(readlink -f -- "$1" 2>/dev/null); then

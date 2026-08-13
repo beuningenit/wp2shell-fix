@@ -189,6 +189,42 @@ restore_from_manifest "$PREVIEW_MANIFEST" >/dev/null 2>&1
 expect_equal "daarna zet terugzetten het wel terug" "ja" \
     "$([ -f "$PREVIEW_SITE/wp-content/uploads/drie.php" ] && printf 'ja' || printf 'nee')"
 
+EVIL_BASE="$FIXTURE/evil"
+mkdir -p "$EVIL_BASE/site/wp-content/plugins/gg-evil" "$EVIL_BASE/doelwit"
+printf 'geheim van een andere klant\n' > "$EVIL_BASE/doelwit/geheim.txt"
+printf '<?php shell\n' > "$EVIL_BASE/site/wp-content/plugins/gg-evil/shell.php"
+printf '{"original_path":"%s/gestolen.txt","stored_path":"%s/doelwit/geheim.txt","site_path":"%s/site"}\n' \
+    "$EVIL_BASE" "$EVIL_BASE" "$EVIL_BASE" > "$EVIL_BASE/site/wp-content/plugins/gg-evil/manifest.ndjson"
+
+SAVED_QDIR=$WP2SHELL_QUARANTINE_DIR
+WP2SHELL_QUARANTINE_DIR="$EVIL_BASE/q"
+quarantine_path "$EVIL_BASE/site" "$EVIL_BASE/site/wp-content/plugins/gg-evil" \
+    "malicious-plugin-structure" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+
+EVIL_MANIFEST=$("${WP2SHELL_FIND:-find}" -P "$EVIL_BASE/q" -type f -name manifest.ndjson 2>/dev/null | "${WP2SHELL_GREP:-grep}" 'gg-evil' | head -1)
+expect_equal "het manifest van de aanvaller belandt wel in quarantaine" "ja" \
+    "$([ -n "$EVIL_MANIFEST" ] && printf 'ja' || printf 'nee')"
+
+expect_equal "maar wordt niet gevonden op de verwachte diepte" "0" \
+    "$("${WP2SHELL_FIND:-find}" -P "$EVIL_BASE/q/$WP2SHELL_RUN_ID" -mindepth 2 -maxdepth 2 -type f -name manifest.ndjson 2>/dev/null | "${WP2SHELL_GREP:-grep}" -c 'gg-evil' || true)"
+
+if [ -n "$EVIL_MANIFEST" ]; then
+    expect_failure "en wordt geweigerd als hij toch verwerkt wordt" \
+        restore_from_manifest "$EVIL_MANIFEST"
+    expect_equal "het doelbestand is niet verplaatst" "ja" \
+        "$([ -f "$EVIL_BASE/doelwit/geheim.txt" ] && printf 'ja' || printf 'nee')"
+    expect_equal "en niet op de bestemming van de aanvaller gezet" "nee" \
+        "$([ -f "$EVIL_BASE/gestolen.txt" ] && printf 'ja' || printf 'nee')"
+fi
+WP2SHELL_QUARANTINE_DIR=$SAVED_QDIR
+
+expect_equal "een pad met .. wordt lexicaal geweigerd" "nee" \
+    "$(path_is_lexically_within "/var/lib/wp2shell/../../etc/passwd" "/var/lib/wp2shell" && printf 'ja' || printf 'nee')"
+expect_equal "een relatief pad wordt geweigerd" "nee" \
+    "$(path_is_lexically_within "relatief/pad" "/var/lib/wp2shell" && printf 'ja' || printf 'nee')"
+expect_equal "een pad binnen de basis wordt geaccepteerd" "ja" \
+    "$(path_is_lexically_within "/var/lib/wp2shell/files/x.php" "/var/lib/wp2shell" && printf 'ja' || printf 'nee')"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
