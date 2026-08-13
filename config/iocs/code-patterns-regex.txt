@@ -1,3 +1,6 @@
+input-exec:high:(^|[^[:alnum:]_>$:])(system|passthru|shell_exec|exec|popen|proc_open)[[:space:]]*\([[:space:]]*@?[[:space:]]*\$_(POST|GET|REQUEST|COOKIE)[[:space:]]*[[{]
+input-exec:high:(^|[^[:alnum:]_>$:])(system|passthru|shell_exec|exec|popen|proc_open)[[:space:]]*\([[:space:]]*@?[[:space:]]*[A-Za-z_][A-Za-z0-9_]{2,30}[[:space:]]*\([[:space:]]*@?[[:space:]]*\$_(POST|GET|REQUEST|COOKIE)[[:space:]]*[[{]
+input-include:high:(^|[^[:alnum:]_>$:])(include|require|include_once|require_once)[[:space:]]*\(?[[:space:]]*@?[[:space:]]*\$_(POST|GET|REQUEST|COOKIE)[[:space:]]*[[{]
 input-eval:high:(^|[^[:alnum:]_>$:])eval[[:space:]]*\([[:space:]]*@?[[:space:]]*\$_(POST|GET|REQUEST|COOKIE|SERVER|FILES)[[:space:]]*[[{]
 input-eval:high:(^|[^[:alnum:]_>$:])eval[[:space:]]*\([[:space:]]*@?[[:space:]]*[A-Za-z_][A-Za-z0-9_]{2,30}[[:space:]]*\([[:space:]]*@?[[:space:]]*\$_(POST|GET|REQUEST|COOKIE)[[:space:]]*[[{]
 input-assert:high:(^|[^[:alnum:]_>$:])assert[[:space:]]*\([[:space:]]*@?[[:space:]]*\$_(POST|GET|REQUEST|COOKIE)[[:space:]]*[[{]

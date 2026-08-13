@@ -458,7 +458,7 @@ detect_regex_join_labels() {
 }
 
 WP2SHELL_REGEX_REQUEST_LINKED=0
-WP2SHELL_REGEX_REQUEST_LINKED_CATEGORIES="input-eval input-assert input-variable-function input-decode computed-superglobal selfhealing-dropper array-function-exec"
+WP2SHELL_REGEX_REQUEST_LINKED_CATEGORIES="input-exec input-include input-eval input-assert input-variable-function input-decode computed-superglobal selfhealing-dropper array-function-exec"
 
 detect_regex_category_is_request_linked() {
     local candidate=$1 entry
