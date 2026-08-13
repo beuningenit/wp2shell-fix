@@ -573,7 +573,38 @@ wp_run_with_extensions() {
 }
 
 wp_is_functional() {
-    wp_run "$1" "$2" core is-installed >/dev/null 2>&1
+    local user=$1 site_path=$2 capture=${3:-}
+    if [ -z "$capture" ]; then
+        wp_run "$user" "$site_path" core is-installed >/dev/null 2>&1
+        return $?
+    fi
+    : > "$capture" 2>/dev/null || true
+    wp_run "$user" "$site_path" core is-installed >"$capture" 2>&1
+    return $?
+}
+
+wp_probe_failure_reason() {
+    local capture=$1 status=$2 line reason=''
+    if [ -n "$capture" ] && [ -s "$capture" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case $line in
+                ''|'PHP Warning:'*|'PHP Notice:'*|'PHP Deprecated:'*) continue ;;
+            esac
+            reason=$line
+            break
+        done < "$capture"
+    fi
+    if [ -z "$reason" ]; then
+        case $status in
+            124|137) reason="wp core is-installed liep in de tijdslimiet en is afgebroken" ;;
+            126) reason="wp core is-installed mocht niet uitgevoerd worden, controleer sudo en de rechten op het WP-CLI-bestand" ;;
+            127) reason="wp core is-installed vond php of WP-CLI niet in het pad /usr/local/bin:/usr/bin:/bin" ;;
+            1) reason="wp core is-installed meldde geen werkende WordPress-installatie, zonder foutregel" ;;
+            *) reason="wp core is-installed stopte met exitcode $status zonder uitvoer" ;;
+        esac
+    fi
+    printf '%s' "${reason:0:400}"
+    return 0
 }
 
 file_sha1() {

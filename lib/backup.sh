@@ -75,10 +75,16 @@ verify_files_archive() {
 
 backup_database_dump() {
     local site_path=$1 owner_user=$2 destination=$3
-    if ! wp_is_functional "$owner_user" "$site_path"; then
-        log_error "WP-CLI kan de site niet benaderen, databasebackup is niet mogelijk"
+    local probe_file probe_status=0 probe_reason
+    probe_file=$(mktemp "${TMPDIR:-/tmp}/wp2shell-probe.XXXXXX") || probe_file=''
+    wp_is_functional "$owner_user" "$site_path" "$probe_file" || probe_status=$?
+    if [ "$probe_status" -ne 0 ]; then
+        probe_reason=$(wp_probe_failure_reason "$probe_file" "$probe_status")
+        rm -f -- "$probe_file" 2>/dev/null || true
+        log_error "WP-CLI kan de site niet benaderen, databasebackup is niet mogelijk: $probe_reason"
         return 1
     fi
+    rm -f -- "$probe_file" 2>/dev/null || true
     if ! wp_run "$owner_user" "$site_path" db export - > "$destination" 2>/dev/null; then
         log_error "Databaseexport is mislukt voor $site_path"
         return 1
