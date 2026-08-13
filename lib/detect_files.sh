@@ -40,6 +40,7 @@ declare -gA WP2SHELL_DETECT_FILES_PLUGIN_OPEN_REST=()
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_OPEN_REST_EVIDENCE=()
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK=()
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK_EVIDENCE=()
+declare -gA WP2SHELL_DETECT_FILES_PLUGIN_SAME_FILE=()
 
 file_ioc_directory() {
     if [ -n "${WP2SHELL_IOC_DIR:-}" ] && [ -d "$WP2SHELL_IOC_DIR" ]; then
@@ -262,6 +263,7 @@ detect_files_contains_literal() {
 detect_files_reset_file_state() {
     WP2SHELL_DETECT_FILES_SIGNAL_COUNT=0
     WP2SHELL_DETECT_FILES_SIGNAL_LABELS=()
+    WP2SHELL_DETECT_FILES_STRONG_CATEGORIES=()
     WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
     WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
     WP2SHELL_DETECT_FILES_HIGH_REPORTED=0
@@ -271,6 +273,23 @@ detect_files_reset_file_state() {
 detect_files_note_signal() {
     WP2SHELL_DETECT_FILES_SIGNAL_COUNT=$((WP2SHELL_DETECT_FILES_SIGNAL_COUNT + 1))
     WP2SHELL_DETECT_FILES_SIGNAL_LABELS+=("$1")
+    return 0
+}
+
+detect_files_note_strong_signal() {
+    local label=$1 category=$2 existing
+    detect_files_note_signal "$label"
+    for existing in "${WP2SHELL_DETECT_FILES_STRONG_CATEGORIES[@]+"${WP2SHELL_DETECT_FILES_STRONG_CATEGORIES[@]}"}"; do
+        if [ "$existing" = "$category" ]; then
+            return 0
+        fi
+    done
+    WP2SHELL_DETECT_FILES_STRONG_CATEGORIES+=("$category")
+    return 0
+}
+
+detect_files_strong_category_count() {
+    printf '%s' "${#WP2SHELL_DETECT_FILES_STRONG_CATEGORIES[@]}"
     return 0
 }
 
@@ -292,7 +311,7 @@ detect_files_signal_summary() {
 }
 
 detect_files_confidence_for_signal_count() {
-    if [ "$WP2SHELL_DETECT_FILES_SIGNAL_COUNT" -ge 2 ]; then
+    if [ "${#WP2SHELL_DETECT_FILES_STRONG_CATEGORIES[@]}" -ge 2 ]; then
         printf '%s' "$CONFIDENCE_HIGH"
     else
         printf '%s' "$CONFIDENCE_HEURISTIC"
@@ -560,7 +579,7 @@ detect_files_report_clamav_hit() {
     if [ -z "$signature" ]; then
         return 0
     fi
-    detect_files_note_signal "clamav-detectie $signature"
+    detect_files_note_strong_signal "clamav-detectie $signature" "clamav"
     record_finding \
         "site=$site_path" \
         "severity=$SEVERITY_HIGH" \
@@ -625,7 +644,7 @@ detect_files_report_hash_match() {
     if [ "$algorithm" = "sha256" ]; then
         shown_hash="$WP2SHELL_DETECT_FILES_CURRENT_SHA256"
     fi
-    detect_files_note_signal "hashmatch $algorithm"
+    detect_files_note_strong_signal "hashmatch $algorithm" "hash"
     WP2SHELL_DETECT_FILES_HIGH_REPORTED=1
     record_finding \
         "site=$site_path" \
@@ -688,7 +707,7 @@ detect_files_report_php_in_writable_directory() {
             "remediation=Controleer of deze allowlist-regel nog klopt."
         return 0
     fi
-    detect_files_note_signal "uitvoerbare PHP in $location"
+    detect_files_note_strong_signal "uitvoerbare PHP in $location" "writable-location"
     WP2SHELL_DETECT_FILES_HIGH_REPORTED=1
     record_finding \
         "site=$site_path" \
@@ -750,6 +769,9 @@ detect_files_track_plugin_structure() {
     if [ "$has_sink" = "1" ] && [ "$has_decode" = "1" ]; then
         WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK["$plugin_dir"]="$candidate"
         WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK_EVIDENCE["$plugin_dir"]=$(detect_files_first_match_line "$candidate" 'base64_decode(')
+        if [ "$has_open_rest" = "1" ]; then
+            WP2SHELL_DETECT_FILES_PLUGIN_SAME_FILE["$plugin_dir"]="$candidate"
+        fi
     fi
     return 0
 }
@@ -769,16 +791,30 @@ detect_files_report_plugin_structures() {
         rest_evidence=${WP2SHELL_DETECT_FILES_PLUGIN_OPEN_REST_EVIDENCE["$plugin_dir"]:-}
         sink_evidence=${WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK_EVIDENCE["$plugin_dir"]:-}
         plugin_name=${plugin_dir##*/}
+        local same_file=${WP2SHELL_DETECT_FILES_PLUGIN_SAME_FILE["$plugin_dir"]:-}
+        if [ -n "$same_file" ]; then
+            record_finding \
+                "site=$site_path" \
+                "severity=$SEVERITY_CRITICAL" \
+                "confidence=$CONFIDENCE_HIGH" \
+                "category=malicious-plugin-structure" \
+                "title=Plugin $plugin_name combineert in een bestand een open REST-route met een commando-uitvoerder" \
+                "detail=In het bestand $same_file staat zowel een REST-route waarvan de permission_callback op __return_true staat, dus zonder enige autorisatie bereikbaar, als code die een commando-sink aanroept op base64-gedecodeerde invoer. Die twee in hetzelfde bestand vormen de structuur van de webshellplugin die na de wp2shell-exploitatie wordt geplaatst. De structuur is beoordeeld en niet de naam, want de gerapporteerde naamgevingen lopen sterk uiteen." \
+                "file=$same_file" \
+                "evidence=$rest_evidence | $sink_evidence" \
+                "remediation=Deactiveer deze plugin en zet de map in quarantaine, en behandel de installatie als gecompromitteerd."
+            continue
+        fi
         record_finding \
             "site=$site_path" \
-            "severity=$SEVERITY_CRITICAL" \
-            "confidence=$CONFIDENCE_HIGH" \
-            "category=malicious-plugin-structure" \
-            "title=Plugin $plugin_name combineert een open REST-route met een commando-uitvoerder" \
-            "detail=In deze pluginmap staat zowel een REST-route waarvan de permission_callback op __return_true staat, dus zonder enige autorisatie bereikbaar, als code die een commando-sink aanroept op base64-gedecodeerde invoer. Die twee samen vormen de structuur van de webshellplugin die na de wp2shell-exploitatie wordt geplaatst. De structuur is beoordeeld en niet de naam, want de gerapporteerde naamgevingen lopen sterk uiteen. Open route in $rest_file, commando-sink in $sink_file." \
+            "severity=$SEVERITY_HIGH" \
+            "confidence=$CONFIDENCE_HEURISTIC" \
+            "category=plugin-structure-review" \
+            "title=Plugin $plugin_name bevat zowel een open REST-route als een commando-uitvoerder" \
+            "detail=In deze pluginmap staat een REST-route zonder autorisatie in $rest_file, en in het andere bestand $sink_file staat een commando-sink op base64-gedecodeerde invoer. Ze staan niet in hetzelfde bestand, dus er is geen aangetoond verband. Grote legitieme plugins, waaronder bekende securityplugins, voldoen hier regelmatig aan. Dit is daarom een signaal voor handmatige beoordeling en geen bevestigde besmetting." \
             "file=$plugin_dir" \
             "evidence=$rest_evidence | $sink_evidence" \
-            "remediation=Deactiveer deze plugin niet via de beheerinterface maar zet de hele map in quarantaine en behandel de installatie als gecompromitteerd."
+            "remediation=Beoordeel of de commando-sink bereikbaar is vanaf de open route. Verwijder niets zonder die beoordeling."
     done
     return 0
 }
@@ -834,7 +870,11 @@ detect_files_scan_file_content() {
         fi
         category=${WP2SHELL_FILE_IOC_PATTERN_CATEGORY["$literal"]:-onbekend}
         confidence=${WP2SHELL_FILE_IOC_PATTERN_CONFIDENCE["$literal"]:-low}
-        detect_files_note_signal "patroon $literal"
+        if [ "$confidence" = "high" ]; then
+            detect_files_note_strong_signal "patroon $literal" "$category"
+        else
+            detect_files_note_signal "patroon $literal"
+        fi
         case $confidence in
             high)
                 high_count=$((high_count + 1))
@@ -995,16 +1035,45 @@ detect_files_report_user_ini() {
     if ! line=$(grep -F -n -m1 -e 'auto_prepend_file' -- "$candidate" 2>/dev/null); then
         return 0
     fi
+    local target=''
+    if [[ $line =~ auto_prepend_file[[:space:]]*=[[:space:]]*[\"\']?([^\"\'[:space:]]+) ]]; then
+        target=${BASH_REMATCH[1]}
+    fi
+    local target_is_writable_area=0 resolved=''
+    if [ -n "$target" ]; then
+        case $target in
+            /*) resolved=$target ;;
+            *) resolved="$site_path/$target" ;;
+        esac
+        case $resolved in
+            */wp-content/uploads/*|*/wp-content/cache/*|*/wp-content/upgrade/*|/tmp/*|/var/tmp/*|/dev/shm/*)
+                target_is_writable_area=1
+                ;;
+        esac
+    fi
+    if [ "$target_is_writable_area" = "1" ]; then
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_CRITICAL" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=user-ini-auto-prepend" \
+            "title=auto_prepend_file in .user.ini wijst naar een schrijfbare map" \
+            "detail=Deze .user.ini laadt bij elke PHP-aanvraag eerst $resolved. Dat pad ligt in een map waar geen uitvoerbare code hoort te staan, en dat is de combinatie die bij persistentie na een inbraak hoort. Let op dat .user.ini onder lsphp alleen werkt wanneer het expliciet is ingeschakeld, dus de regel kan slapend zijn." \
+            "file=$candidate" \
+            "evidence=$(detect_files_evidence_snippet "$line")" \
+            "remediation=Beoordeel het voorgeschakelde bestand, zet het in quarantaine en verwijder deze regel uit .user.ini."
+        return 0
+    fi
     record_finding \
         "site=$site_path" \
-        "severity=$SEVERITY_HIGH" \
-        "confidence=$CONFIDENCE_HIGH" \
-        "category=user-ini-auto-prepend" \
+        "severity=$SEVERITY_MEDIUM" \
+        "confidence=$CONFIDENCE_HEURISTIC" \
+        "category=user-ini-auto-prepend-review" \
         "title=auto_prepend_file in .user.ini" \
-        "detail=Een .user.ini met auto_prepend_file laadt bij elke PHP-aanvraag eerst een ander bestand. Anders dan bij .htaccess werkt dit ook onder OpenLiteSpeed en WordPress of zijn plugins schrijven deze instelling niet. Dit is een sterk signaal van persistentie." \
-        "file=$candidate" \
+        "detail=Deze .user.ini laadt bij elke PHP-aanvraag eerst ${target:-een ander bestand}. Dat is een bekende plek voor persistentie, maar securityplugins zetten hier legitiem hun eigen firewallbestand neer, en het doelpad ligt hier niet in een map waar geen code hoort. Onder lsphp werkt .user.ini bovendien alleen wanneer dat expliciet is ingeschakeld." \
+            "file=$candidate" \
         "evidence=$(detect_files_evidence_snippet "$line")" \
-        "remediation=Beoordeel het voorgeschakelde bestand, zet het in quarantaine en verwijder deze regel uit .user.ini."
+        "remediation=Controleer of het voorgeschakelde bestand bij een bekende plugin hoort. Zo niet, zet het in quarantaine en verwijder de regel."
     return 0
 }
 

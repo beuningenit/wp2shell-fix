@@ -980,6 +980,7 @@ detect_wp_administrator_accounts() {
     local site_path=$1 owner_user=$2
     WP2SHELL_DETECT_WP_ADMIN_TOTAL=0
     WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW=0
+    WP2SHELL_DETECT_WP_ADMIN_TRUNCATED=0
     local admins_file rows_file status
     admins_file=$(detect_wp_work_file admins.out)
     rows_file=$(detect_wp_work_file admins-rows.txt)
@@ -1033,10 +1034,17 @@ detect_wp_administrator_accounts() {
         fi
         rank_note=$(detect_wp_admin_rank_note "$login" "$email") || rank_note=''
         registered_number=$(detect_wp_datetime_to_number "$registered") || registered_number=''
-        if ! detect_wp_consume_item_budget; then
-            continue
-        fi
+        local account_is_in_window=0
         if [ -n "$window_number" ] && [ -n "$registered_number" ] && [ "$registered_number" -ge "$window_number" ]; then
+            account_is_in_window=1
+        fi
+        if [ "$account_is_in_window" != "1" ]; then
+            if ! detect_wp_consume_item_budget; then
+                WP2SHELL_DETECT_WP_ADMIN_TRUNCATED=$((${WP2SHELL_DETECT_WP_ADMIN_TRUNCATED:-0} + 1))
+                continue
+            fi
+        fi
+        if [ "$account_is_in_window" = "1" ]; then
             WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW=$((WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW + 1))
             detail="Beheerder $login met e-mailadres $email is aangemaakt op $registered, dat is op of na het begin van het blootstellingsvenster ($window_datetime). Een nieuw beheerdersaccount binnen dat venster is de bekendste vorm van persistentie bij deze aanval."
             if [ -n "$rank_note" ]; then
@@ -2013,8 +2021,25 @@ detect_wp_object_cache_context() {
     return 0
 }
 
+detect_wp_report_admin_truncation() {
+    local site_path=$1
+    if [ "${WP2SHELL_DETECT_WP_ADMIN_TRUNCATED:-0}" -le 0 ]; then
+        return 0
+    fi
+    record_finding \
+        "site=$site_path" \
+        "severity=$SEVERITY_MEDIUM" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=admin-list-truncated" \
+        "title=Niet alle beheerdersaccounts zijn afzonderlijk gerapporteerd" \
+        "detail=Er zijn ${WP2SHELL_DETECT_WP_ADMIN_TRUNCATED} beheerders buiten het blootstellingsvenster niet apart gerapporteerd omdat de limiet per controle bereikt was. Accounts die binnen het venster zijn aangemaakt worden nooit afgekapt en zijn dus wel volledig beoordeeld. Voor de overige accounts is deze lijst onvolledig." \
+        "remediation=Verhoog de limiet per controle of beoordeel de volledige beheerderslijst met wp user list --role=administrator."
+    return 0
+}
+
 detect_wp_report_scan_scope() {
     local site_path=$1 cli_version=$2
+    detect_wp_report_admin_truncation "$site_path"
     local expected=${WP2SHELL_EXPECTED_WP_CLI_VERSION:-2.12.0}
     local detail
     detail="Uitgevoerde controles op deze installatie: core-integriteit (${WP2SHELL_DETECT_WP_CORE_STATUS:-niet uitgevoerd}),"
@@ -2075,6 +2100,7 @@ detect_wp_for_site() {
     WP2SHELL_DETECT_WP_PLUGIN_STATUS='niet uitgevoerd'
     WP2SHELL_DETECT_WP_ADMIN_TOTAL=0
     WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW=0
+    WP2SHELL_DETECT_WP_ADMIN_TRUNCATED=0
     WP2SHELL_DETECT_WP_DB_STATUS='niet uitgevoerd'
     log_info "WP-CLI- en databasecontroles voor $site_path als gebruiker $owner_user"
     if ! wp_is_functional "$owner_user" "$site_path"; then

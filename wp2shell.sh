@@ -231,7 +231,7 @@ setup_run_environment() {
 }
 
 check_dependencies() {
-    if ! require_command php sha1sum curl date stat base64; then
+    if ! require_command php sha1sum sha256sum curl date stat base64; then
         die "$EXIT_INTERNAL" "Niet alle vereiste commando's zijn aanwezig"
     fi
     detect_optional_commands
@@ -436,7 +436,7 @@ require_detection_modules() {
 detect_all_for_site() {
     local site_path=$1 owner_user=$2 domain=$3
     detect_files_for_site "$site_path" "$owner_user" || true
-    detect_wp_for_site "$site_path" "$owner_user" || true
+    detect_wp_for_site "$site_path" "$owner_user" "$domain" || true
     detect_logs_for_site "$site_path" "$domain" || true
     return 0
 }

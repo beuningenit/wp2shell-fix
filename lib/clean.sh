@@ -6,9 +6,7 @@ WP2SHELL_AUTO_QUARANTINE_CATEGORIES=(
     "minimal-backdoor"
     "malicious-plugin-structure"
     "wp2shell-rest-namespace"
-    "backdoor-pattern"
     "user-ini-auto-prepend"
-    "core-extra-file"
 )
 
 category_is_auto_quarantinable() {

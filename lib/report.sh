@@ -234,6 +234,54 @@ render_site_section() {
     return 0
 }
 
+render_server_wide_section() {
+    if [ ! -s "${WP2SHELL_FINDINGS_FILE:-}" ]; then
+        return 0
+    fi
+    local collected
+    collected=$(mktemp)
+    local line record_site
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        record_site=$(json_extract_field "$line" site_path) || record_site=''
+        if [ -z "$record_site" ]; then
+            printf '%s\n' "$line" >> "$collected"
+        fi
+    done < "$WP2SHELL_FINDINGS_FILE"
+    if [ ! -s "$collected" ]; then
+        rm -f -- "$collected"
+        return 0
+    fi
+    printf 'Serverbrede bevindingen\n'
+    printf '========================================================================================\n'
+    printf 'Deze bevindingen horen niet bij een enkele installatie maar bij de server als geheel.\n\n'
+    local severity confidence title detail remediation
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        severity=$(json_extract_field "$line" severity) || severity=''
+        confidence=$(json_extract_field "$line" confidence) || confidence=''
+        title=$(json_extract_field "$line" title) || title=''
+        detail=$(json_extract_field "$line" detail) || detail=''
+        remediation=$(json_extract_field "$line" remediation) || remediation=''
+        printf '  [%s] %s\n' "$(severity_dutch_label "$severity")" "$title"
+        printf '      zekerheid: %s\n' "$(confidence_dutch_label "$confidence")"
+        if [ -n "$detail" ]; then
+            wrap_text "$detail" 84 '      '
+        fi
+        if [ -n "$remediation" ]; then
+            printf '      actie: %s\n' "$remediation"
+        fi
+        printf '\n'
+    done < <(sort_findings_by_severity "$collected")
+    rm -f -- "$collected"
+    printf '\n'
+    return 0
+}
+
 render_dutch_summary() {
     local output=$1
     local hostname_value worst sites_total
@@ -282,6 +330,7 @@ render_dutch_summary() {
         printf 'Heuristisch, handmatige review nodig : %s\n' \
             "$(count_matching_field "$WP2SHELL_FINDINGS_FILE" confidence "$CONFIDENCE_HEURISTIC")"
         printf '\n'
+        render_server_wide_section
         printf 'Per installatie\n'
         printf '========================================================================================\n'
         if [ -s "$WP2SHELL_SITES_FILE" ]; then
