@@ -164,6 +164,17 @@ expect_equal "zonder filter komt de rest ook terug" "ja" \
 
 expect_success "opnieuw terugzetten geeft geen fout" restore_from_manifest "$FILTER_MANIFEST"
 
+COLL_SITE="$FIXTURE/collsite"
+mkdir -p "$COLL_SITE/wp-content/uploads"
+printf '<?php origineel\n' > "$COLL_SITE/wp-content/uploads/bots.php"
+quarantine_file "$COLL_SITE" "$COLL_SITE/wp-content/uploads/bots.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+printf '<?php de site maakte hem opnieuw aan\n' > "$COLL_SITE/wp-content/uploads/bots.php"
+COLL_MANIFEST=$(quarantine_manifest_path "$COLL_SITE")
+expect_failure "botsing terwijl beide kopieen bestaan is een fout" \
+    restore_from_manifest "$COLL_MANIFEST"
+expect_equal "het bestand van de site blijft ongemoeid" '<?php de site maakte hem opnieuw aan' \
+    "$(cat "$COLL_SITE/wp-content/uploads/bots.php")"
+
 PREVIEW_SITE="$FIXTURE/previewsite"
 mkdir -p "$PREVIEW_SITE/wp-content/uploads"
 printf '<?php drie\n' > "$PREVIEW_SITE/wp-content/uploads/drie.php"

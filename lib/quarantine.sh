@@ -233,8 +233,8 @@ restore_from_manifest() {
             continue
         fi
         if [ -e "$original" ]; then
-            log_info "Overgeslagen, er staat al een bestand op deze plek: $original"
-            skipped_count=$((skipped_count + 1))
+            log_error "Niet teruggezet, er staat al een ander bestand op deze plek: $original"
+            failed_count=$((failed_count + 1))
             continue
         fi
         if ! mkdir -p -- "$(dirname -- "$original")"; then

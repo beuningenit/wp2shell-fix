@@ -667,7 +667,13 @@ command_restore() {
     local manifests
     manifests=$(mktemp -t wp2shell-restore.XXXXXXXX) || return "$EXIT_INTERNAL"
     register_temp_cleanup "$manifests"
-    "${WP2SHELL_FIND:-find}" -P "$quarantine_root" -type f -name 'manifest.ndjson' -print0 > "$manifests" 2>/dev/null || true
+    local find_status=0
+    "${WP2SHELL_FIND:-find}" -P "$quarantine_root" -type f -name 'manifest.ndjson' -print0 > "$manifests" 2>/dev/null || find_status=$?
+    if [ "$find_status" -ne 0 ]; then
+        log_error "Het doorzoeken van $quarantine_root gaf exitcode $find_status, de lijst met manifesten is mogelijk onvolledig"
+        log_error "Er wordt niets teruggezet, want een onvolledige lijst laat bestanden ongemerkt in quarantaine staan"
+        return "$EXIT_INTERNAL"
+    fi
     if [ ! -s "$manifests" ]; then
         log_error "Geen manifest gevonden onder $quarantine_root"
         return "$EXIT_USAGE"

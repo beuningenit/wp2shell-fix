@@ -1197,7 +1197,7 @@ detect_files_evaluate_file() {
     fi
     if [ "$scannable" = "1" ]; then
         detect_files_compute_hashes "$candidate"
-    elif detect_files_is_php_candidate "$base"; then
+    elif detect_files_is_php_candidate "$base" && [ "$size" -gt "$limit" ]; then
         log_debug "PHP-bestand te groot voor inhoudscontrole, alleen padregels toegepast: $candidate"
         WP2SHELL_DETECT_FILES_OVERSIZED+=("$candidate")
     fi
