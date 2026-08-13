@@ -460,7 +460,7 @@ run_detection_over_sites() {
             "category=reference-fetch-cap-reached" \
             "title=De limiet op het ophalen van referentiepakketten is bereikt" \
             "detail=Er zijn deze run meer pakketten nodig dan de ingestelde limiet toestaat, dus niet elke plugin of elk thema is tegen de officiele release vergeleken. Die installaties zijn op dat punt niet gecontroleerd." \
-            "remediation=Verhoog WP2SHELL_REFERENCE_FETCH_CAP of draai de scan opnieuw, dan wordt de cache verder aangevuld."
+            "remediation=Verhoog WP2SHELL_REFERENCE_MAX_FETCHES_PER_RUN in de configuratie of draai de scan opnieuw, dan wordt de cache verder aangevuld."
     fi
     return 0
 }
@@ -468,7 +468,8 @@ run_detection_over_sites() {
 require_detection_modules() {
     local missing=() name
     for name in detect_files_for_site detect_wp_for_site detect_logs_for_site \
-        detect_integrity_for_site detect_host_persistence crosssite_report; do
+        detect_integrity_for_site detect_host_persistence crosssite_report \
+        crosssite_record_candidate detect_regex_scan_file; do
         if ! declare -F "$name" >/dev/null 2>&1; then
             missing+=("$name")
         fi
@@ -487,12 +488,85 @@ require_detection_modules() {
     return 0
 }
 
+WP2SHELL_CROSSSITE_EXCLUDED_CATEGORIES=(
+    "directory-guard-present"
+    "php-in-writable-directory-allowlisted"
+    "integrity-unverified"
+    "integrity-package-dir-missing"
+    "integrity-coverage-partial"
+    "integrity-summary"
+    "core-file-outdated"
+    "oversized-php-unscanned"
+    "mu-plugin-present"
+)
+
+category_is_crosssite_candidate() {
+    local candidate=$1 entry
+    if [ -z "$candidate" ]; then
+        return 1
+    fi
+    for entry in "${WP2SHELL_CROSSSITE_EXCLUDED_CATEGORIES[@]}"; do
+        if [ "$entry" = "$candidate" ]; then
+            return 1
+        fi
+    done
+    return 0
+}
+
+feed_crosssite_from_findings() {
+    local site_path=$1
+    if [ ! -s "${WP2SHELL_FINDINGS_FILE:-}" ]; then
+        return 0
+    fi
+    local snapshot line record_site confidence category rank file_path digest fed=0
+    snapshot=$(mktemp -t wp2shell-xsite.XXXXXXXX) || return 0
+    register_temp_cleanup "$snapshot"
+    cp -- "$WP2SHELL_FINDINGS_FILE" "$snapshot"
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        record_site=$(json_extract_field "$line" site_path) || record_site=''
+        if [ "$record_site" != "$site_path" ]; then
+            continue
+        fi
+        confidence=$(json_extract_field "$line" confidence) || confidence=''
+        if [ "$confidence" != "$CONFIDENCE_HIGH" ] && [ "$confidence" != "$CONFIDENCE_HEURISTIC" ]; then
+            continue
+        fi
+        category=$(json_extract_field "$line" category) || category=''
+        if ! category_is_crosssite_candidate "$category"; then
+            continue
+        fi
+        rank=$(json_extract_field "$line" severity_rank) || rank=0
+        case $rank in
+            ''|*[!0-9]*) rank=0 ;;
+        esac
+        if [ "$rank" -lt 30 ]; then
+            continue
+        fi
+        file_path=$(json_extract_field "$line" file_path) || file_path=''
+        if [ -z "$file_path" ] || [ ! -f "$file_path" ] || [ -L "$file_path" ]; then
+            continue
+        fi
+        digest=$(file_sha256 "$file_path") || digest=''
+        if [ -z "$digest" ]; then
+            continue
+        fi
+        crosssite_record_candidate "$site_path" "$file_path" "$digest" "$confidence" || true
+        fed=$((fed + 1))
+    done < "$snapshot"
+    log_debug "$fed verdachte bestanden aangeboden aan de kruisvergelijking voor $site_path"
+    return 0
+}
+
 detect_all_for_site() {
     local site_path=$1 owner_user=$2 domain=$3
     detect_files_for_site "$site_path" "$owner_user" || true
     detect_integrity_for_site "$site_path" "$owner_user" || true
     detect_wp_for_site "$site_path" "$owner_user" "$domain" || true
     detect_logs_for_site "$site_path" "$domain" || true
+    feed_crosssite_from_findings "$site_path" || true
     return 0
 }
 
