@@ -393,6 +393,57 @@ category_blocks_clean_verdict() {
     return 1
 }
 
+WP2SHELL_VERIFICATION_BLIND_CATEGORIES=(
+    "wp-cli-unavailable"
+    "core-checksums-unavailable"
+    "core-checksums-error"
+    "core-checksums-truncated"
+    "core-checksums-unparsed"
+    "plugin-checksums-unavailable"
+    "plugin-checksums-error"
+    "db-query-unavailable"
+    "admin-list-unavailable"
+    "admin-list-unparsable"
+    "ioc-data-missing"
+    "scan-incomplete"
+)
+
+category_indicates_blind_spot() {
+    local candidate=$1 entry
+    for entry in "${WP2SHELL_VERIFICATION_BLIND_CATEGORIES[@]}"; do
+        if [ "$entry" = "$candidate" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+collect_verification_blind_spots() {
+    local findings_file=$1
+    if [ ! -s "$findings_file" ]; then
+        return 0
+    fi
+    local line category seen=''
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        category=$(json_extract_field "$line" category) || category=''
+        if [ -z "$category" ]; then
+            continue
+        fi
+        if ! category_indicates_blind_spot "$category"; then
+            continue
+        fi
+        case " $seen " in
+            *" $category "*) continue ;;
+        esac
+        seen="$seen $category"
+    done < "$findings_file"
+    printf '%s' "${seen# }"
+    return 0
+}
+
 count_actionable_findings_in() {
     local findings_file=$1
     if [ ! -s "$findings_file" ]; then
@@ -425,6 +476,21 @@ verify_site_after_clean() {
     log_info "Controle na het opschonen van $site_path"
     rerun_detection_into "$site_path" "$owner_user" "$domain" "$recheck"
     remaining=$(count_actionable_findings_in "$recheck")
+    local blind_spots
+    blind_spots=$(collect_verification_blind_spots "$recheck")
+    if [ "$remaining" = "0" ] && [ -n "$blind_spots" ]; then
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_HIGH" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=cleanup-unverified" \
+            "title=Deze installatie kon na het opschonen niet volledig gecontroleerd worden" \
+            "detail=De controle na het opschonen vond geen resterende besmetting, maar een deel van de controles kon niet draaien: $blind_spots. Daardoor is de core-integriteit, de database of de beheerderslijst niet nagekeken. Deze site telt daarom niet als aantoonbaar schoon, want de belangrijkste manier om een achtergebleven injectie te vinden is juist die controle." \
+            "evidence=$blind_spots" \
+            "remediation=Zorg dat WP-CLI de site kan benaderen en de database bereikbaar is, en draai daarna opnieuw clean of scan op deze installatie."
+        log_error "Controle onvolledig op $site_path, niet uitgevoerde controles: $blind_spots"
+        return 1
+    fi
     if [ "$remaining" = "0" ]; then
         record_finding \
             "site=$site_path" \
