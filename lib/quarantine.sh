@@ -165,13 +165,15 @@ quarantine_report_only() {
     return 0
 }
 
-restore_from_manifest() {
+preview_restore_from_manifest() {
     local manifest=$1 selector=${2:-}
     if [ ! -s "$manifest" ]; then
         log_error "Geen manifest gevonden: $manifest"
         return 1
     fi
-    local line original stored restored_count=0 failed_count=0
+    local line original stored record_site candidates=0
+    local manifest_files_root
+    manifest_files_root="$(dirname -- "$manifest")/files"
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -181,16 +183,81 @@ restore_from_manifest() {
         if [ -z "$original" ] || [ -z "$stored" ]; then
             continue
         fi
-        if [ -n "$selector" ] && [ "$original" != "$selector" ]; then
+        if ! path_is_lexically_within "$stored" "$manifest_files_root"; then
+            log_warn "Zou geweigerd worden, verwijst buiten de eigen quarantainemap: $stored"
             continue
         fi
+        record_site=$(json_extract_field "$line" site_path) || record_site=''
+        if [ -z "$record_site" ] || ! path_is_lexically_within "$original" "$record_site"; then
+            log_warn "Zou geweigerd worden, wijst buiten de installatie: $original"
+            continue
+        fi
+        if [ -n "$selector" ]; then
+            case $original in
+                *"$selector"*) ;;
+                *) continue ;;
+            esac
+        fi
         if [ ! -f "$stored" ]; then
-            log_warn "Het bestand in quarantaine ontbreekt: $stored"
-            failed_count=$((failed_count + 1))
             continue
         fi
         if [ -e "$original" ]; then
-            log_warn "Overgeslagen, op de oorspronkelijke plek staat alweer een bestand: $original"
+            continue
+        fi
+        candidates=$((candidates + 1))
+        log_info "Zou terugzetten: $original"
+    done < "$manifest"
+    log_info "$candidates bestanden zouden teruggezet worden uit dit manifest"
+    return 0
+}
+
+restore_from_manifest() {
+    local manifest=$1 selector=${2:-}
+    if [ ! -s "$manifest" ]; then
+        log_error "Geen manifest gevonden: $manifest"
+        return 1
+    fi
+    local line original stored record_site restored_count=0 failed_count=0 skipped_count=0
+    local manifest_files_root
+    manifest_files_root="$(dirname -- "$manifest")/files"
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        original=$(json_extract_field "$line" original_path) || original=''
+        stored=$(json_extract_field "$line" stored_path) || stored=''
+        if [ -z "$original" ] || [ -z "$stored" ]; then
+            continue
+        fi
+        if ! path_is_lexically_within "$stored" "$manifest_files_root"; then
+            log_error "Geweigerd, dit manifest verwijst naar een bestand buiten zijn eigen quarantainemap: $stored"
+            failed_count=$((failed_count + 1))
+            continue
+        fi
+        record_site=$(json_extract_field "$line" site_path) || record_site=''
+        if [ -z "$record_site" ] || ! path_is_lexically_within "$original" "$record_site"; then
+            log_error "Geweigerd, dit manifest wil een bestand buiten de installatie terugzetten: $original"
+            failed_count=$((failed_count + 1))
+            continue
+        fi
+        if [ -n "$selector" ]; then
+            case $original in
+                *"$selector"*) ;;
+                *) continue ;;
+            esac
+        fi
+        if [ ! -f "$stored" ]; then
+            if [ -e "$original" ]; then
+                log_info "Stond al terug op de oorspronkelijke plek: $original"
+                skipped_count=$((skipped_count + 1))
+            else
+                log_warn "Het bestand in quarantaine ontbreekt en staat ook niet terug: $stored"
+                failed_count=$((failed_count + 1))
+            fi
+            continue
+        fi
+        if [ -e "$original" ]; then
+            log_error "Niet teruggezet, er staat al een ander bestand op deze plek: $original"
             failed_count=$((failed_count + 1))
             continue
         fi
@@ -208,7 +275,7 @@ restore_from_manifest() {
             failed_count=$((failed_count + 1))
         fi
     done < "$manifest"
-    log_info "Terugzetten afgerond, $restored_count hersteld, $failed_count mislukt"
+    log_info "Terugzetten afgerond, $restored_count hersteld, $skipped_count overgeslagen, $failed_count mislukt"
     if [ "$failed_count" -gt 0 ]; then
         return 1
     fi

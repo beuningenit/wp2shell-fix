@@ -12,6 +12,7 @@ WP2SHELL_DETECT_FILES_SHA256_TOOL=""
 
 WP2SHELL_DETECT_FILES_SIGNAL_COUNT=0
 WP2SHELL_DETECT_FILES_SIGNAL_LABELS=()
+WP2SHELL_DETECT_FILES_OVERSIZED=()
 WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
 WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
 WP2SHELL_DETECT_FILES_HIGH_REPORTED=0
@@ -181,7 +182,7 @@ detect_files_report_ioc_gap() {
 detect_files_is_php_candidate() {
     local lower=${1,,}
     case $lower in
-        *.php|*.phtml|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar|*.inc) return 0 ;;
+        *.php|*.phtml|*.pht|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar|*.inc) return 0 ;;
     esac
     return 1
 }
@@ -189,7 +190,7 @@ detect_files_is_php_candidate() {
 detect_files_is_executable_php_name() {
     local lower=${1,,}
     case $lower in
-        *.php|*.phtml|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar) return 0 ;;
+        *.php|*.phtml|*.pht|*.php3|*.php4|*.php5|*.php6|*.php7|*.php8|*.phps|*.phar) return 0 ;;
     esac
     return 1
 }
@@ -422,6 +423,7 @@ detect_files_build_name_arguments() {
         -o -iname '*.php7'
         -o -iname '*.php8'
         -o -iname '*.phps'
+        -o -iname '*.pht'
         -o -iname '*.phar'
         -o -iname '*.inc'
         -o -iname '*.zip'
@@ -1195,8 +1197,9 @@ detect_files_evaluate_file() {
     fi
     if [ "$scannable" = "1" ]; then
         detect_files_compute_hashes "$candidate"
-    elif detect_files_is_php_candidate "$base"; then
+    elif detect_files_is_php_candidate "$base" && [ "$size" -gt "$limit" ]; then
         log_debug "PHP-bestand te groot voor inhoudscontrole, alleen padregels toegepast: $candidate"
+        WP2SHELL_DETECT_FILES_OVERSIZED+=("$candidate")
     fi
     detect_files_note_location_signals "$relative"
     detect_files_report_clamav_hit "$site_path" "$candidate"
@@ -1226,6 +1229,33 @@ detect_files_evaluate_candidates() {
             log_warn "Bestand kon niet volledig beoordeeld worden: $candidate"
     done < "$listing"
     log_debug "$examined kandidaatbestanden beoordeeld in $site_path"
+    return 0
+}
+
+detect_files_report_oversized_files() {
+    local site_path=$1
+    local total=${#WP2SHELL_DETECT_FILES_OVERSIZED[@]}
+    if [ "$total" -eq 0 ]; then
+        return 0
+    fi
+    local limit=${WP2SHELL_HEURISTIC_MAX_FILE_BYTES:-5242880}
+    local sample='' entry shown=0
+    for entry in "${WP2SHELL_DETECT_FILES_OVERSIZED[@]}"; do
+        if [ "$shown" -ge 5 ]; then
+            break
+        fi
+        sample="$sample $entry"
+        shown=$((shown + 1))
+    done
+    record_finding \
+        "site=$site_path" \
+        "severity=$SEVERITY_MEDIUM" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=oversized-php-unscanned" \
+        "title=$total PHP-bestanden waren te groot voor een inhoudscontrole" \
+        "detail=Deze bestanden zijn groter dan $limit bytes en zijn daarom alleen op hun pad en naam beoordeeld. Hun inhoud is niet bekeken en er is geen hash van berekend, dus een webshell die in zo'n bestand verstopt zit zou hier niet gevonden zijn. Deze installatie mag op dat punt niet als volledig gecontroleerd gelden." \
+        "evidence=${sample# }" \
+        "remediation=Bekijk deze bestanden handmatig, of verhoog WP2SHELL_HEURISTIC_MAX_FILE_BYTES in de configuratie en scan opnieuw."
     return 0
 }
 
@@ -1289,6 +1319,7 @@ detect_files_for_site() {
     WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK_EVIDENCE=()
     WP2SHELL_DETECT_FILES_PLUGIN_SAME_FILE=()
     WP2SHELL_DETECT_FILES_CLAMAV_HITS=()
+    WP2SHELL_DETECT_FILES_OVERSIZED=()
     local listing status=0
     listing=$(mktemp -t wp2shell-candidates.XXXXXXXX) || {
         log_error "Kan geen tijdelijk bestand aanmaken voor de bestandsscan van $site_path"
@@ -1311,6 +1342,7 @@ detect_files_for_site() {
     detect_files_run_clamav_corroboration "$listing" "$owner_user" || \
         log_warn "ClamAV-controle kon niet uitgevoerd worden voor $site_path"
     detect_files_evaluate_candidates "$site_path" "$listing"
+    detect_files_report_oversized_files "$site_path"
     detect_files_report_plugin_structures "$site_path"
     detect_files_report_suspicious_directories "$site_path" || \
         log_warn "Controle op verdachte mapnamen is niet voltooid voor $site_path"

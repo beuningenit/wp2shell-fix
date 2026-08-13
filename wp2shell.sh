@@ -29,6 +29,7 @@ OPT_MAINTENANCE=0
 OPT_CONFIG=""
 OPT_NO_MAIL=0
 OPT_RUN_ID=""
+OPT_FILTER=""
 
 usage() {
     cat <<'USAGE'
@@ -42,6 +43,7 @@ Subcommando's:
   clean      Opschonen van besmette installaties. Doet niets zonder --apply.
   harden     Preventie toepassen. Wijzigende stappen alleen met --apply.
   report     Laatste resultaten opnieuw renderen en optioneel mailen.
+  restore    Zet bestanden uit quarantaine terug. Doet niets zonder --apply.
 
 Opties:
   --apply                 Schakel wijzigende acties in. Zonder deze vlag wordt niets gewijzigd.
@@ -55,7 +57,8 @@ Opties:
   --remove-admins         Sta het verwijderen van verdachte adminaccounts toe. Aparte opt-in.
   --maintenance           Zet de site in onderhoudsmodus tijdens het opschonen.
   --config <pad>          Alternatief configuratiebestand.
-  --run-id <id>           Hergebruik een bestaande run, alleen voor report.
+  --run-id <id>           Hergebruik een bestaande run. Verplicht bij report en restore.
+  --filter <tekst>        Bij restore, zet alleen paden terug die deze tekst bevatten.
   --verbose               Toon debugmeldingen.
   --help                  Toon deze hulptekst.
 
@@ -75,6 +78,9 @@ Voorbeelden:
   wp2shell.sh scan --user klantnaam
   wp2shell.sh clean --site /home/klant/domains/voorbeeld.nl/public_html --apply
   wp2shell.sh harden --apply
+  wp2shell.sh restore --run-id 20260813-090000-1234
+  wp2shell.sh restore --run-id 20260813-090000-1234 --apply
+  wp2shell.sh restore --run-id 20260813-090000-1234 --filter wp-content/uploads --apply
 USAGE
 }
 
@@ -85,7 +91,7 @@ parse_arguments() {
     fi
     while [ "$#" -gt 0 ]; do
         case $1 in
-            scan|clean|harden|report)
+            scan|clean|harden|report|restore)
                 if [ -n "$OPT_SUBCOMMAND" ]; then
                     log_error "Meerdere subcommando's opgegeven: $OPT_SUBCOMMAND en $1"
                     exit "$EXIT_USAGE"
@@ -148,6 +154,10 @@ parse_arguments() {
                 shift || true
                 OPT_RUN_ID=${1:-}
                 ;;
+            --filter)
+                shift || true
+                OPT_FILTER=${1:-}
+                ;;
             *)
                 log_error "Onbekende optie: $1"
                 usage
@@ -162,6 +172,17 @@ parse_arguments() {
 }
 
 validate_arguments() {
+    if [ "$OPT_SUBCOMMAND" = "restore" ] && [ -z "$OPT_RUN_ID" ]; then
+        log_error "restore vereist --run-id van de run waarin de bestanden in quarantaine zijn gezet"
+        exit "$EXIT_USAGE"
+    fi
+    if [ "$OPT_SUBCOMMAND" = "restore" ] && [ "$OPT_APPLY" != "1" ]; then
+        log_warn "restore zet bestanden terug in de live site, dat vereist --apply"
+    fi
+    if [ -n "$OPT_FILTER" ] && [ "$OPT_SUBCOMMAND" != "restore" ]; then
+        log_error "--filter hoort bij restore"
+        exit "$EXIT_USAGE"
+    fi
     if [ "$OPT_SUBCOMMAND" = "scan" ] && [ "$OPT_APPLY" = "1" ]; then
         log_error "scan is altijd read-only, gebruik clean of harden met --apply"
         exit "$EXIT_USAGE"
@@ -224,8 +245,20 @@ setup_run_environment() {
     WP2SHELL_SITES_FILE="$WP2SHELL_RUN_DIR/sites.ndjson"
     WP2SHELL_REPORT_JSON="$WP2SHELL_RUN_DIR/report.json"
     WP2SHELL_REPORT_TEXT="$WP2SHELL_RUN_DIR/samenvatting.txt"
-    : > "$WP2SHELL_FINDINGS_FILE"
-    : > "$WP2SHELL_SITES_FILE"
+    case $OPT_SUBCOMMAND in
+        report|restore)
+            if [ ! -e "$WP2SHELL_FINDINGS_FILE" ]; then
+                : > "$WP2SHELL_FINDINGS_FILE"
+            fi
+            if [ ! -e "$WP2SHELL_SITES_FILE" ]; then
+                : > "$WP2SHELL_SITES_FILE"
+            fi
+            ;;
+        *)
+            : > "$WP2SHELL_FINDINGS_FILE"
+            : > "$WP2SHELL_SITES_FILE"
+            ;;
+    esac
     WP2SHELL_STARTED_AT=$(timestamp_iso)
     return 0
 }
@@ -633,6 +666,50 @@ command_harden() {
     return 0
 }
 
+command_restore() {
+    local quarantine_root="${WP2SHELL_QUARANTINE_DIR:-/var/lib/wp2shell/quarantine}/$OPT_RUN_ID"
+    if [ ! -d "$quarantine_root" ]; then
+        log_error "Geen quarantaine gevonden voor run $OPT_RUN_ID in $quarantine_root"
+        return "$EXIT_USAGE"
+    fi
+    local manifests
+    manifests=$(mktemp -t wp2shell-restore.XXXXXXXX) || return "$EXIT_INTERNAL"
+    register_temp_cleanup "$manifests"
+    local find_status=0
+    "${WP2SHELL_FIND:-find}" -P "$quarantine_root" -mindepth 2 -maxdepth 2 -type f -name 'manifest.ndjson' -print0 > "$manifests" 2>/dev/null || find_status=$?
+    if [ "$find_status" -ne 0 ]; then
+        log_error "Het doorzoeken van $quarantine_root gaf exitcode $find_status, de lijst met manifesten is mogelijk onvolledig"
+        log_error "Er wordt niets teruggezet, want een onvolledige lijst laat bestanden ongemerkt in quarantaine staan"
+        return "$EXIT_INTERNAL"
+    fi
+    if [ ! -s "$manifests" ]; then
+        log_error "Geen manifest gevonden onder $quarantine_root"
+        return "$EXIT_USAGE"
+    fi
+    local manifest failures=0 handled=0
+    while IFS= read -r -d '' manifest; do
+        handled=$((handled + 1))
+        if [ "$OPT_APPLY" != "1" ]; then
+            log_info "Zou terugzetten uit $manifest"
+            preview_restore_from_manifest "$manifest" "$OPT_FILTER"
+            continue
+        fi
+        log_info "Terugzetten uit $manifest"
+        if ! restore_from_manifest "$manifest" "$OPT_FILTER"; then
+            failures=$((failures + 1))
+        fi
+    done < "$manifests"
+    if [ "$OPT_APPLY" != "1" ]; then
+        log_info "$handled manifesten bekeken, er is niets teruggezet omdat --apply ontbreekt"
+        return 0
+    fi
+    log_info "$handled manifesten verwerkt, $failures met fouten"
+    if [ "$failures" -gt 0 ]; then
+        return "$EXIT_INTERNAL"
+    fi
+    return 0
+}
+
 command_report() {
     if [ -z "$OPT_RUN_ID" ]; then
         log_error "report vereist --run-id van een eerdere run"
@@ -681,12 +758,23 @@ main() {
             die "$EXIT_LOCKED" "Er draait al een wp2shell-run, deze run stopt"
         fi
     fi
+    local subcommand_status=0
     case $OPT_SUBCOMMAND in
-        scan) command_scan ;;
-        clean) command_clean ;;
-        harden) command_harden ;;
-        report) command_report ;;
+        scan) command_scan || subcommand_status=$? ;;
+        clean) command_clean || subcommand_status=$? ;;
+        harden) command_harden || subcommand_status=$? ;;
+        report) command_report || subcommand_status=$? ;;
+        restore) command_restore || subcommand_status=$? ;;
     esac
+    if [ "$subcommand_status" -ne 0 ]; then
+        release_run_lock
+        die "$subcommand_status" "Het subcommando $OPT_SUBCOMMAND is gestopt met exitcode $subcommand_status"
+    fi
+    if [ "$OPT_SUBCOMMAND" = "restore" ]; then
+        release_run_lock
+        log_info "Terugzetten afgerond"
+        exit "$EXIT_OK"
+    fi
     finalize_run
     release_run_lock
     local worst

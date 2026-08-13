@@ -144,6 +144,87 @@ expect_failure "een dump zonder CREATE TABLE wordt afgekeurd" verify_database_du
 printf 'CREATE TABLE wp_posts (id int);\n' > "$FIXTURE/goed.sql"
 expect_success "een geldige dump wordt geaccepteerd" verify_database_dump "$FIXTURE/goed.sql"
 
+FILTER_SITE="$FIXTURE/filtersite"
+mkdir -p "$FILTER_SITE/wp-content/uploads" "$FILTER_SITE/wp-content/cache"
+printf '<?php een\n' > "$FILTER_SITE/wp-content/uploads/een.php"
+printf '<?php twee\n' > "$FILTER_SITE/wp-content/cache/twee.php"
+quarantine_file "$FILTER_SITE" "$FILTER_SITE/wp-content/uploads/een.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+quarantine_file "$FILTER_SITE" "$FILTER_SITE/wp-content/cache/twee.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+FILTER_MANIFEST=$(quarantine_manifest_path "$FILTER_SITE")
+
+restore_from_manifest "$FILTER_MANIFEST" "wp-content/uploads" >/dev/null 2>&1
+expect_equal "filter zet alleen het gefilterde bestand terug" "ja" \
+    "$([ -f "$FILTER_SITE/wp-content/uploads/een.php" ] && printf 'ja' || printf 'nee')"
+expect_equal "filter laat het andere bestand in quarantaine" "nee" \
+    "$([ -f "$FILTER_SITE/wp-content/cache/twee.php" ] && printf 'ja' || printf 'nee')"
+
+restore_from_manifest "$FILTER_MANIFEST" >/dev/null 2>&1
+expect_equal "zonder filter komt de rest ook terug" "ja" \
+    "$([ -f "$FILTER_SITE/wp-content/cache/twee.php" ] && printf 'ja' || printf 'nee')"
+
+expect_success "opnieuw terugzetten geeft geen fout" restore_from_manifest "$FILTER_MANIFEST"
+
+COLL_SITE="$FIXTURE/collsite"
+mkdir -p "$COLL_SITE/wp-content/uploads"
+printf '<?php origineel\n' > "$COLL_SITE/wp-content/uploads/bots.php"
+quarantine_file "$COLL_SITE" "$COLL_SITE/wp-content/uploads/bots.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+printf '<?php de site maakte hem opnieuw aan\n' > "$COLL_SITE/wp-content/uploads/bots.php"
+COLL_MANIFEST=$(quarantine_manifest_path "$COLL_SITE")
+expect_failure "botsing terwijl beide kopieen bestaan is een fout" \
+    restore_from_manifest "$COLL_MANIFEST"
+expect_equal "het bestand van de site blijft ongemoeid" '<?php de site maakte hem opnieuw aan' \
+    "$(cat "$COLL_SITE/wp-content/uploads/bots.php")"
+
+PREVIEW_SITE="$FIXTURE/previewsite"
+mkdir -p "$PREVIEW_SITE/wp-content/uploads"
+printf '<?php drie\n' > "$PREVIEW_SITE/wp-content/uploads/drie.php"
+quarantine_file "$PREVIEW_SITE" "$PREVIEW_SITE/wp-content/uploads/drie.php" "test" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+PREVIEW_MANIFEST=$(quarantine_manifest_path "$PREVIEW_SITE")
+
+expect_success "vooruitblik op terugzetten werkt" preview_restore_from_manifest "$PREVIEW_MANIFEST"
+expect_equal "de vooruitblik zet niets terug" "nee" \
+    "$([ -f "$PREVIEW_SITE/wp-content/uploads/drie.php" ] && printf 'ja' || printf 'nee')"
+
+restore_from_manifest "$PREVIEW_MANIFEST" >/dev/null 2>&1
+expect_equal "daarna zet terugzetten het wel terug" "ja" \
+    "$([ -f "$PREVIEW_SITE/wp-content/uploads/drie.php" ] && printf 'ja' || printf 'nee')"
+
+EVIL_BASE="$FIXTURE/evil"
+mkdir -p "$EVIL_BASE/site/wp-content/plugins/gg-evil" "$EVIL_BASE/doelwit"
+printf 'geheim van een andere klant\n' > "$EVIL_BASE/doelwit/geheim.txt"
+printf '<?php shell\n' > "$EVIL_BASE/site/wp-content/plugins/gg-evil/shell.php"
+printf '{"original_path":"%s/gestolen.txt","stored_path":"%s/doelwit/geheim.txt","site_path":"%s/site"}\n' \
+    "$EVIL_BASE" "$EVIL_BASE" "$EVIL_BASE" > "$EVIL_BASE/site/wp-content/plugins/gg-evil/manifest.ndjson"
+
+SAVED_QDIR=$WP2SHELL_QUARANTINE_DIR
+WP2SHELL_QUARANTINE_DIR="$EVIL_BASE/q"
+quarantine_path "$EVIL_BASE/site" "$EVIL_BASE/site/wp-content/plugins/gg-evil" \
+    "malicious-plugin-structure" "$CONFIDENCE_HIGH" "$(id -un)" >/dev/null 2>&1
+
+EVIL_MANIFEST=$("${WP2SHELL_FIND:-find}" -P "$EVIL_BASE/q" -type f -name manifest.ndjson 2>/dev/null | "${WP2SHELL_GREP:-grep}" 'gg-evil' | head -1)
+expect_equal "het manifest van de aanvaller belandt wel in quarantaine" "ja" \
+    "$([ -n "$EVIL_MANIFEST" ] && printf 'ja' || printf 'nee')"
+
+expect_equal "maar wordt niet gevonden op de verwachte diepte" "0" \
+    "$("${WP2SHELL_FIND:-find}" -P "$EVIL_BASE/q/$WP2SHELL_RUN_ID" -mindepth 2 -maxdepth 2 -type f -name manifest.ndjson 2>/dev/null | "${WP2SHELL_GREP:-grep}" -c 'gg-evil' || true)"
+
+if [ -n "$EVIL_MANIFEST" ]; then
+    expect_failure "en wordt geweigerd als hij toch verwerkt wordt" \
+        restore_from_manifest "$EVIL_MANIFEST"
+    expect_equal "het doelbestand is niet verplaatst" "ja" \
+        "$([ -f "$EVIL_BASE/doelwit/geheim.txt" ] && printf 'ja' || printf 'nee')"
+    expect_equal "en niet op de bestemming van de aanvaller gezet" "nee" \
+        "$([ -f "$EVIL_BASE/gestolen.txt" ] && printf 'ja' || printf 'nee')"
+fi
+WP2SHELL_QUARANTINE_DIR=$SAVED_QDIR
+
+expect_equal "een pad met .. wordt lexicaal geweigerd" "nee" \
+    "$(path_is_lexically_within "/var/lib/wp2shell/../../etc/passwd" "/var/lib/wp2shell" && printf 'ja' || printf 'nee')"
+expect_equal "een relatief pad wordt geweigerd" "nee" \
+    "$(path_is_lexically_within "relatief/pad" "/var/lib/wp2shell" && printf 'ja' || printf 'nee')"
+expect_equal "een pad binnen de basis wordt geaccepteerd" "ja" \
+    "$(path_is_lexically_within "/var/lib/wp2shell/files/x.php" "/var/lib/wp2shell" && printf 'ja' || printf 'nee')"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
