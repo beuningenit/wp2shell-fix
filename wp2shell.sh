@@ -447,6 +447,15 @@ run_detection_sequential() {
 run_detection_parallel() {
     local jobs=$1
     local worker_dir index=0 line site_path owner_user domain
+    local total_fetch_cap=${WP2SHELL_REFERENCE_MAX_FETCHES_PER_RUN:-60}
+    case $total_fetch_cap in
+        ''|*[!0-9]*) total_fetch_cap=60 ;;
+    esac
+    local worker_fetch_cap=$(( total_fetch_cap / jobs ))
+    if [ "$worker_fetch_cap" -lt 1 ]; then
+        worker_fetch_cap=1
+    fi
+    log_debug "Ophaallimiet per worker: $worker_fetch_cap van in totaal $total_fetch_cap"
     worker_dir=$(make_temp_dir wp2shell-detect)
     register_temp_cleanup "$worker_dir"
     while IFS= read -r line || [ -n "$line" ]; do
@@ -463,6 +472,9 @@ run_detection_parallel() {
         (
             WP2SHELL_FINDINGS_FILE="$worker_dir/$index.ndjson"
             : > "$WP2SHELL_FINDINGS_FILE"
+            WP2SHELL_REFERENCE_RESULT_FILE="$worker_dir/$index.reference"
+            WP2SHELL_REFERENCE_MAX_FETCHES_PER_RUN="$worker_fetch_cap"
+            export WP2SHELL_REFERENCE_RESULT_FILE WP2SHELL_REFERENCE_MAX_FETCHES_PER_RUN
             detect_all_for_site "$site_path" "$owner_user" "$domain"
         ) &
         while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do
