@@ -679,6 +679,34 @@ detect_files_report_mu_plugin_file() {
     return 0
 }
 
+WP2SHELL_DETECT_FILES_GUARD_MAX_BYTES=300
+
+detect_files_is_harmless_directory_guard() {
+    local candidate=$1 size=$2
+    local base=${candidate##*/}
+    if [ "$base" != "index.php" ] && [ "$base" != "index.html" ]; then
+        return 1
+    fi
+    case $size in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    if [ "$size" -gt "$WP2SHELL_DETECT_FILES_GUARD_MAX_BYTES" ]; then
+        return 1
+    fi
+    local forbidden
+    for forbidden in 'eval' 'base64' 'assert' 'gzinflate' 'gzuncompress' 'str_rot13' 'include' \
+        'require' 'file_get_contents' 'file_put_contents' 'fopen' 'shell_exec' 'passthru' \
+        'proc_open' 'popen' 'system' 'exec' 'preg_replace' 'create_function' 'call_user_func' \
+        'move_uploaded_file' '$_POST' '$_GET' '$_REQUEST' '$_COOKIE' '$_FILES' '$_ENV' '$GLOBALS' \
+        'curl_' 'socket_' 'chmod' 'unlink' 'hex2bin' 'pack(' '\\x'
+    do
+        if detect_files_contains_literal "$candidate" "$forbidden"; then
+            return 1
+        fi
+    done
+    return 0
+}
+
 detect_files_report_php_in_writable_directory() {
     local site_path=$1 relative=$2 candidate=$3 size=$4
     if [ "${WP2SHELL_SCAN_UPLOADS_PHP:-1}" != "1" ]; then
@@ -705,6 +733,19 @@ detect_files_report_php_in_writable_directory() {
             "file=$candidate" \
             "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
             "remediation=Controleer of deze allowlist-regel nog klopt."
+        return 0
+    fi
+    if detect_files_is_harmless_directory_guard "$candidate" "$size"; then
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_INFO" \
+            "confidence=$CONFIDENCE_HEURISTIC" \
+            "category=directory-guard-present" \
+            "title=Lege index.php in $location" \
+            "detail=Dit is een index.php van $size bytes zonder enige uitvoerende code, het bekende Silence is golden bestand dat WordPress, hostingpanelen en veel plugins in schrijfbare mappen neerzetten om directory listing te voorkomen. Het is geen besmetting en wordt daarom niet opgeruimd." \
+            "file=$candidate" \
+            "sha1=$WP2SHELL_DETECT_FILES_CURRENT_SHA1" \
+            "remediation=Geen actie nodig."
         return 0
     fi
     detect_files_note_strong_signal "uitvoerbare PHP in $location" "writable-location"
