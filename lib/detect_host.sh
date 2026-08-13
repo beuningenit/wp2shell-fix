@@ -270,9 +270,13 @@ detect_host_init_cron_patterns() {
     local decoder='base64[[:space:]]+(-[^[:space:]]*d|--decode)'
     local boundary='(^|[[:space:]]|;|&|\||\()'
     local command_start="${boundary}(/[^[:space:]]*/)?"
+    local stdin_shell='(sh|bash|zsh|ksh|dash)'
     detect_host_add_cron_pattern strong \
-        "een downloader die rechtstreeks in een interpreter wordt gepijpt" \
-        "${command_start}${downloader}[^|]*\|[[:space:]]*(/[^[:space:]]*/)?${interpreter}([[:space:]]|;|\$)"
+        "een downloader die rechtstreeks in een shell wordt gepijpt" \
+        "${command_start}${downloader}[^|]*\|[[:space:]]*(/[^[:space:]]*/)?${stdin_shell}([[:space:]]+-[a-z]+)*[[:space:]]*(;|&|\||\)|\$)"
+    detect_host_add_cron_pattern strong \
+        "een downloader die in een interpreter wordt gepijpt die van standaardinvoer leest" \
+        "${command_start}${downloader}[^|]*\|[[:space:]]*(/[^[:space:]]*/)?(php[0-9.]*|python[0-9.]*|perl|ruby|node)([[:space:]]+-[a-z]+)*[[:space:]]*(-|--)?[[:space:]]*(;|&|\||\)|\$)"
     detect_host_add_cron_pattern strong \
         "een base64-decodering die rechtstreeks in een interpreter wordt gepijpt" \
         "${command_start}${decoder}[^|]*\|[[:space:]]*(/[^[:space:]]*/)?${interpreter}([[:space:]]|;|\$)"
@@ -286,8 +290,11 @@ detect_host_init_cron_patterns() {
         "een bestand in /dev/shm dat opgehaald of uitgevoerd wordt" \
         "${command_start}${interpreter}[[:space:]]+${flags}/dev/shm/|${command_start}${downloader}[^|]*[[:space:]]/dev/shm/|/dev/shm/\."
     detect_host_add_cron_pattern strong \
-        "een interpreter die zijn code van een netwerklocatie haalt" \
-        "${command_start}${inline}[^|]*(https?|ftps?)://|${command_start}(php[0-9.]*|python[0-9.]*|perl|ruby)[[:space:]]+(https?|ftps?)://"
+        "een interpreter die zijn code rechtstreeks van een netwerklocatie haalt" \
+        "${command_start}(php[0-9.]*|python[0-9.]*|perl|ruby)[[:space:]]+(https?|ftps?)://"
+    detect_host_add_cron_pattern weak \
+        "inline interpretercode waarin een netwerkadres voorkomt" \
+        "${command_start}${inline}[^|]*(https?|ftps?)://"
     detect_host_add_cron_pattern strong \
         "inline interpretercode met een decodeer- of uitvoerfunctie" \
         "${command_start}${inline}[^|]*(eval|assert|base64_decode|gzinflate|gzuncompress|str_rot13|shell_exec|passthru|proc_open|popen|system)[[:space:]]*\("
