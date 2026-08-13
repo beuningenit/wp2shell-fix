@@ -37,6 +37,10 @@ declare -gA WP2SHELL_FILE_IOC_SHA256=()
 declare -gA WP2SHELL_FILE_IOC_PATTERN_CATEGORY=()
 declare -gA WP2SHELL_FILE_IOC_PATTERN_CONFIDENCE=()
 declare -gA WP2SHELL_DETECT_FILES_CLAMAV_HITS=()
+declare -gA WP2SHELL_DETECT_FILES_SHA1_CACHE=()
+declare -gA WP2SHELL_DETECT_FILES_SHA256_CACHE=()
+declare -gA WP2SHELL_DETECT_FILES_CONTENT_HITS=()
+WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE=0
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_OPEN_REST=()
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_OPEN_REST_EVIDENCE=()
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK=()
@@ -607,16 +611,105 @@ detect_files_note_location_signals() {
     return 0
 }
 
+detect_files_populate_hash_cache() {
+    local listing=$1
+    WP2SHELL_DETECT_FILES_SHA1_CACHE=()
+    WP2SHELL_DETECT_FILES_SHA256_CACHE=()
+    if [ ! -s "$listing" ]; then
+        return 0
+    fi
+    local digest path
+    while IFS=' ' read -r digest path; do
+        if [ -n "$digest" ] && [ -n "$path" ]; then
+            WP2SHELL_DETECT_FILES_SHA1_CACHE["$path"]=${digest,,}
+        fi
+    done < <(tr '\0' '\n' < "$listing" | tr '\n' '\0' | xargs -0 -r sha1sum -- 2>/dev/null | sed 's/^\\//; s/  /|/' | tr '|' ' ')
+    if [ "${#WP2SHELL_FILE_IOC_SHA256[@]}" -gt 0 ]; then
+        while IFS=' ' read -r digest path; do
+            if [ -n "$digest" ] && [ -n "$path" ]; then
+                WP2SHELL_DETECT_FILES_SHA256_CACHE["$path"]=${digest,,}
+            fi
+        done < <(tr '\0' '\n' < "$listing" | tr '\n' '\0' | xargs -0 -r sha256sum -- 2>/dev/null | sed 's/^\\//; s/  /|/' | tr '|' ' ')
+    fi
+    log_debug "Hashcache gevuld: ${#WP2SHELL_DETECT_FILES_SHA1_CACHE[@]} sha1, ${#WP2SHELL_DETECT_FILES_SHA256_CACHE[@]} sha256"
+    return 0
+}
+
+detect_files_collect_prefilter_hits() {
+    local listing=$1
+    shift
+    local hit status=0
+    while IFS= read -r hit; do
+        if [ -n "$hit" ]; then
+            WP2SHELL_DETECT_FILES_CONTENT_HITS["$hit"]=1
+        fi
+    done < <(xargs -0 -r "$@" -- < "$listing" 2>/dev/null) || status=$?
+    if [ "$status" -gt 1 ]; then
+        return 1
+    fi
+    return 0
+}
+
+detect_files_populate_content_prefilter() {
+    local listing=$1
+    WP2SHELL_DETECT_FILES_CONTENT_HITS=()
+    WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE=0
+    if [ ! -s "$listing" ]; then
+        return 0
+    fi
+    if declare -F detect_regex_load_patterns_once >/dev/null 2>&1; then
+        detect_regex_load_patterns_once || true
+    fi
+    local literal_ok=1 regex_ok=1
+    if [ -n "$WP2SHELL_FILE_IOC_PATTERN_FILE" ] && [ -s "$WP2SHELL_FILE_IOC_PATTERN_FILE" ]; then
+        detect_files_collect_prefilter_hits "$listing" \
+            "${WP2SHELL_GREP:-grep}" -I -l -F -f "$WP2SHELL_FILE_IOC_PATTERN_FILE" || literal_ok=0
+    else
+        literal_ok=0
+    fi
+    if [ -n "${WP2SHELL_REGEX_GATE_FILE:-}" ] && [ -s "${WP2SHELL_REGEX_GATE_FILE}" ]; then
+        detect_files_collect_prefilter_hits "$listing" \
+            "${WP2SHELL_GREP:-grep}" -I -l -E -f "$WP2SHELL_REGEX_GATE_FILE" || regex_ok=0
+    elif declare -F detect_regex_scan_file >/dev/null 2>&1; then
+        regex_ok=0
+    fi
+    if [ "$literal_ok" != "1" ] || [ "$regex_ok" != "1" ]; then
+        log_debug "Voorselectie op inhoud niet volledig bruikbaar, elk bestand wordt afzonderlijk gecontroleerd"
+        WP2SHELL_DETECT_FILES_CONTENT_HITS=()
+        return 0
+    fi
+    WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE=1
+    log_debug "Voorselectie op inhoud: ${#WP2SHELL_DETECT_FILES_CONTENT_HITS[@]} bestanden met een mogelijke treffer"
+    return 0
+}
+
+detect_files_content_is_interesting() {
+    local candidate=$1
+    if [ "$WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE" != "1" ]; then
+        return 0
+    fi
+    if [ -n "${WP2SHELL_DETECT_FILES_CONTENT_HITS[$candidate]:-}" ]; then
+        return 0
+    fi
+    return 1
+}
+
 detect_files_compute_hashes() {
     local candidate=$1
-    WP2SHELL_DETECT_FILES_CURRENT_SHA1=$(file_sha1 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
+    WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_SHA1_CACHE[$candidate]:-}
+    if [ -z "$WP2SHELL_DETECT_FILES_CURRENT_SHA1" ]; then
+        WP2SHELL_DETECT_FILES_CURRENT_SHA1=$(file_sha1 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
+    fi
     WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_CURRENT_SHA1,,}
     WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_CURRENT_SHA1#\\}
     if [ "${#WP2SHELL_DETECT_FILES_CURRENT_SHA1}" -ne 40 ]; then
         WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
     fi
     if [ "${#WP2SHELL_FILE_IOC_SHA256[@]}" -gt 0 ]; then
-        WP2SHELL_DETECT_FILES_CURRENT_SHA256=$(file_sha256 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
+        WP2SHELL_DETECT_FILES_CURRENT_SHA256=${WP2SHELL_DETECT_FILES_SHA256_CACHE[$candidate]:-}
+        if [ -z "$WP2SHELL_DETECT_FILES_CURRENT_SHA256" ]; then
+            WP2SHELL_DETECT_FILES_CURRENT_SHA256=$(file_sha256 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
+        fi
         WP2SHELL_DETECT_FILES_CURRENT_SHA256=${WP2SHELL_DETECT_FILES_CURRENT_SHA256,,}
         if [ "${#WP2SHELL_DETECT_FILES_CURRENT_SHA256}" -ne 64 ]; then
             WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
@@ -1209,11 +1302,12 @@ detect_files_evaluate_file() {
     detect_files_report_mu_plugin_file "$site_path" "$relative" "$candidate"
     detect_files_report_php_in_writable_directory "$site_path" "$relative" "$candidate" "$size"
     detect_files_report_suspicious_name "$site_path" "$relative" "$candidate" "$size"
-    if [ "$scannable" = "1" ]; then
+    if [ "$scannable" = "1" ] && detect_files_content_is_interesting "$candidate"; then
         detect_files_scan_file_content "$site_path" "$relative" "$candidate" "$size" || return 1
     fi
     detect_files_report_configuration_file "$site_path" "$relative" "$candidate" "$size"
-    if detect_files_is_php_candidate "$base" && declare -F detect_regex_scan_file >/dev/null 2>&1; then
+    if detect_files_is_php_candidate "$base" && declare -F detect_regex_scan_file >/dev/null 2>&1 &&
+        detect_files_content_is_interesting "$candidate"; then
         detect_regex_scan_file "$site_path" "$candidate" "$size" || true
     fi
     return 0
@@ -1344,6 +1438,8 @@ detect_files_for_site() {
     fi
     detect_files_run_clamav_corroboration "$listing" "$owner_user" || \
         log_warn "ClamAV-controle kon niet uitgevoerd worden voor $site_path"
+    detect_files_populate_hash_cache "$listing"
+    detect_files_populate_content_prefilter "$listing"
     detect_files_evaluate_candidates "$site_path" "$listing"
     detect_files_report_oversized_files "$site_path"
     detect_files_report_plugin_structures "$site_path"
