@@ -175,6 +175,16 @@ detect_host_report_privilege_gap() {
     return 0
 }
 
+detect_host_user_home() {
+    local user=$1
+    if declare -F directadmin_user_home >/dev/null 2>&1; then
+        directadmin_user_home "$user"
+        return 0
+    fi
+    user_home_dir "$user"
+    return 0
+}
+
 detect_host_collect_users_into() {
     local destination=$1
     local users_dir=${WP2SHELL_DIRECTADMIN_USERS_DIR:-/usr/local/directadmin/data/users}
@@ -258,45 +268,50 @@ detect_host_init_cron_patterns() {
     local downloader='(curl|wget|fetch|lwp-download)'
     local flags='(-[a-z0-9]+[[:space:]]+)*'
     local decoder='base64[[:space:]]+(-[^[:space:]]*d|--decode)'
+    local boundary='(^|[[:space:]]|;|&|\||\()'
+    local command_start="${boundary}(/[^[:space:]]*/)?"
     detect_host_add_cron_pattern strong \
         "een downloader die rechtstreeks in een interpreter wordt gepijpt" \
-        "$downloader[^|]*\|[[:space:]]*(/[^[:space:]]*/)?$interpreter([[:space:]]|;|\$)"
+        "${command_start}${downloader}[^|]*\|[[:space:]]*(/[^[:space:]]*/)?${interpreter}([[:space:]]|;|\$)"
     detect_host_add_cron_pattern strong \
         "een base64-decodering die rechtstreeks in een interpreter wordt gepijpt" \
-        "$decoder[^|]*\|[[:space:]]*(/[^[:space:]]*/)?$interpreter([[:space:]]|;|\$)"
+        "${command_start}${decoder}[^|]*\|[[:space:]]*(/[^[:space:]]*/)?${interpreter}([[:space:]]|;|\$)"
     detect_host_add_cron_pattern strong \
         "een verwijzing naar een .onion-adres" \
         "\.onion([^a-z0-9]|\$)"
     detect_host_add_cron_pattern strong \
         "netcat met een optie die een programma aan de verbinding koppelt" \
-        "(^|[^a-z0-9_/])(nc|ncat|netcat)[[:space:]]+([^|]*[[:space:]])?-[a-z]*[ec]([[:space:]]|\$)"
+        "${command_start}(nc|ncat|netcat)[[:space:]]+([^|]*[[:space:]])?(-[a-z]*[ec]|--(sh-)?exec)([[:space:]]|=|\$)"
     detect_host_add_cron_pattern strong \
-        "een verwijzing naar /dev/shm, een geheugenschijf waar geen beheerscript hoort te staan" \
-        "/dev/shm/"
+        "een bestand in /dev/shm dat opgehaald of uitgevoerd wordt" \
+        "${command_start}${interpreter}[[:space:]]+${flags}/dev/shm/|${command_start}${downloader}[^|]*[[:space:]]/dev/shm/|/dev/shm/\."
     detect_host_add_cron_pattern strong \
         "een interpreter die zijn code van een netwerklocatie haalt" \
-        "$inline[^|]*(https?|ftps?)://|(php[0-9.]*|python[0-9.]*|perl|ruby)[[:space:]]+(https?|ftps?)://"
+        "${command_start}${inline}[^|]*(https?|ftps?)://|${command_start}(php[0-9.]*|python[0-9.]*|perl|ruby)[[:space:]]+(https?|ftps?)://"
     detect_host_add_cron_pattern strong \
         "inline interpretercode met een decodeer- of uitvoerfunctie" \
-        "$inline[^|]*(eval|assert|base64_decode|gzinflate|gzuncompress|str_rot13|shell_exec|passthru|proc_open|popen|system)[[:space:]]*\("
+        "${command_start}${inline}[^|]*(eval|assert|base64_decode|gzinflate|gzuncompress|str_rot13|shell_exec|passthru|proc_open|popen|system)[[:space:]]*\("
     detect_host_add_cron_pattern strong \
         "een interpreter die een bestand uit uploads, cache of upgrade uitvoert" \
-        "(^|[^a-z0-9_/])(/[^[:space:]]*/)?$interpreter[[:space:]]+$flags[^[:space:]|]*/wp-content/(uploads|cache|upgrade)/"
+        "${command_start}${interpreter}[[:space:]]+${flags}[^[:space:]|]*/wp-content/(uploads|cache|upgrade)/"
     detect_host_add_cron_pattern weak \
         "een verwijzing naar /tmp of /var/tmp" \
         "(^|[^a-z0-9_/])/(var/)?tmp/"
     detect_host_add_cron_pattern weak \
+        "een verwijzing naar /dev/shm" \
+        "/dev/shm/"
+    detect_host_add_cron_pattern weak \
         "een shell of interpreter die een bestand uit /tmp of /var/tmp uitvoert" \
-        "(^|[^a-z0-9_/])(/[^[:space:]]*/)?$interpreter[[:space:]]+$flags/(var/)?tmp/"
+        "${command_start}${interpreter}[[:space:]]+${flags}/(var/)?tmp/"
     detect_host_add_cron_pattern weak \
         "inline interpretercode in plaats van een scriptbestand" \
-        "$inline([[:space:]]|\$)"
+        "${command_start}${inline}([[:space:]]|\$)"
     detect_host_add_cron_pattern weak \
         "een base64-decodering" \
-        "$decoder"
+        "${decoder}"
     detect_host_add_cron_pattern weak \
         "rechten die ruim gezet worden" \
-        "chmod[[:space:]]+$flags([0-7]*7[0-7]*|[ugoa]*\+x)([[:space:]]|\$)"
+        "chmod[[:space:]]+${flags}([0-7]*7[0-7]*|[ugoa]*\+x)([[:space:]]|\$)"
     detect_host_add_cron_pattern weak \
         "een download vanaf een adres zonder domeinnaam" \
         "(https?|ftp)://([0-9]{1,3}\.){3}[0-9]{1,3}"
@@ -404,16 +419,17 @@ detect_host_scan_cron_file() {
     fi
     WP2SHELL_DETECT_HOST_CRON_FILES_READ=$((WP2SHELL_DETECT_HOST_CRON_FILES_READ + 1))
     local maximum_lines=${WP2SHELL_HOST_MAX_CRON_LINES:-2000}
+    local reported_path=$path
     local line trimmed lowered number=0 label labels
     while IFS= read -r line || [ -n "$line" ]; do
         number=$((number + 1))
         if [ "$number" -gt "$maximum_lines" ]; then
             detect_host_record_gap \
                 "host-cron-unscanned" \
-                "Cronbestand $path is maar gedeeltelijk gecontroleerd" \
+                "Cronbestand $reported_path is maar gedeeltelijk gecontroleerd" \
                 "Dit bestand heeft meer dan $maximum_lines regels. Alleen de eerste $maximum_lines regels zijn beoordeeld, de rest niet. Een aanvaller die zijn regel onderaan een lange crontab zet zou hier buiten beeld blijven." \
                 "Bekijk dit bestand handmatig of verhoog WP2SHELL_HOST_MAX_CRON_LINES en draai de scan opnieuw." \
-                "$path"
+                "$reported_path"
             break
         fi
         line=${line%$'\r'}
@@ -423,14 +439,14 @@ detect_host_scan_cron_file() {
         esac
         lowered=${trimmed,,}
         if label=$(detect_host_first_strong_cron_label "$lowered"); then
-            detect_host_report_strong_cron_line "$path" "$number" "$label" "$trimmed" "$source_label"
+            detect_host_report_strong_cron_line "$reported_path" "$number" "$label" "$trimmed" "$source_label"
             continue
         fi
         if [ "$weak_enabled" != "1" ]; then
             continue
         fi
         if labels=$(detect_host_weak_cron_labels "$lowered"); then
-            detect_host_note_weak_cron_line "$path" "$number" "$labels" "$trimmed"
+            detect_host_note_weak_cron_line "$reported_path" "$number" "$labels" "$trimmed"
         fi
     done < "$path"
     return 0
@@ -502,7 +518,7 @@ detect_host_report_cron_summary() {
 detect_host_check_cron() {
     detect_host_init_cron_patterns
     local dir path user_sources=0
-    for dir in "${WP2SHELL_DETECT_HOST_USER_CRON_DIRS[@]}"; do
+    for dir in "${WP2SHELL_DETECT_HOST_USER_CRON_DIRS[@]+"${WP2SHELL_DETECT_HOST_USER_CRON_DIRS[@]}"}"; do
         if [ ! -d "$dir" ]; then
             continue
         fi
@@ -514,16 +530,16 @@ detect_host_check_cron() {
         detect_host_record_gap \
             "host-cron-unreadable" \
             "De crontabs van de gebruikers zijn niet gecontroleerd" \
-            "Geen van de verwachte mappen ${WP2SHELL_DETECT_HOST_USER_CRON_DIRS[*]} was aanwezig en leesbaar. Persistentie via cron is de vorm die een opschoning van de sites het vaakst overleeft, dus dit onderdeel ontbreekt in deze run." \
+            "Geen van de verwachte mappen ${WP2SHELL_DETECT_HOST_USER_CRON_DIRS[*]+"${WP2SHELL_DETECT_HOST_USER_CRON_DIRS[*]}"} was aanwezig en leesbaar. Persistentie via cron is de vorm die een opschoning van de sites het vaakst overleeft, dus dit onderdeel ontbreekt in deze run." \
             "Draai de hostcontroles als root, of controleer waar de cronimplementatie van deze server zijn crontabs bewaart."
     fi
-    for dir in "${WP2SHELL_DETECT_HOST_SYSTEM_CRON_DIRS[@]}"; do
+    for dir in "${WP2SHELL_DETECT_HOST_SYSTEM_CRON_DIRS[@]+"${WP2SHELL_DETECT_HOST_SYSTEM_CRON_DIRS[@]}"}"; do
         detect_host_scan_cron_directory "$dir" "systeemcrontab" 1 || true
     done
-    for path in "${WP2SHELL_DETECT_HOST_SYSTEM_CRON_FILES[@]}"; do
+    for path in "${WP2SHELL_DETECT_HOST_SYSTEM_CRON_FILES[@]+"${WP2SHELL_DETECT_HOST_SYSTEM_CRON_FILES[@]}"}"; do
         detect_host_scan_cron_file "$path" "systeemcrontab" 1
     done
-    for dir in "${WP2SHELL_DETECT_HOST_SCRIPT_CRON_DIRS[@]}"; do
+    for dir in "${WP2SHELL_DETECT_HOST_SCRIPT_CRON_DIRS[@]+"${WP2SHELL_DETECT_HOST_SCRIPT_CRON_DIRS[@]}"}"; do
         detect_host_scan_cron_directory "$dir" "cronscript" 0 || true
     done
     log_info "Croncontrole klaar, $WP2SHELL_DETECT_HOST_CRON_FILES_READ bestanden gelezen uit $WP2SHELL_DETECT_HOST_CRON_SOURCES_READ bronnen"
@@ -536,9 +552,6 @@ detect_host_preload_entry_is_structural() {
     case $entry in
         /tmp/*|/var/tmp/*|/dev/shm/*|/home/*|/var/www/*|/var/spool/*) return 0 ;;
     esac
-    if [ ! -e "$entry" ]; then
-        return 0
-    fi
     return 1
 }
 
@@ -589,11 +602,10 @@ detect_host_check_ld_so_preload() {
         sample="$sample$(detect_host_snippet "$trimmed")"
         if detect_host_preload_entry_is_structural "$trimmed"; then
             structural=1
-            if [ ! -e "$trimmed" ]; then
-                notes="$notes De opgegeven bibliotheek $trimmed bestaat niet op schijf, wat past bij een payload die na gebruik is opgeruimd."
-            else
-                notes="$notes De opgegeven bibliotheek $trimmed staat in een map waar een systeembibliotheek niet hoort."
-            fi
+            notes="$notes De opgegeven bibliotheek $trimmed staat in een map waar een systeembibliotheek niet hoort."
+        fi
+        if [ ! -e "$trimmed" ]; then
+            notes="$notes De opgegeven bibliotheek $trimmed bestaat niet op schijf. Een verwijzing zonder bestand doet niets, dus dit kan net zo goed een restant van een verwijderd pakket zijn als een payload die is opgeruimd."
         fi
     done < "$path"
     if [ "$entries" -eq 0 ]; then
@@ -601,7 +613,7 @@ detect_host_check_ld_so_preload() {
         return 0
     fi
     local confidence="$CONFIDENCE_HEURISTIC"
-    local closing='Een beheerder kan hier legitiem een bibliotheek neerzetten, bijvoorbeeld voor een geheugenallocator of een auditmodule, daarom staat dit op heuristisch niveau en wordt er niets automatisch veranderd.'
+    local closing='Een beheerder kan hier legitiem een bibliotheek neerzetten, bijvoorbeeld voor een geheugenallocator of een auditmodule, en een restant van een verwijderd pakket blijft hier ook wel eens staan. Daarom staat dit op heuristisch niveau en wordt er niets automatisch veranderd.'
     if [ "$structural" = "1" ]; then
         confidence="$CONFIDENCE_HIGH"
         closing='De verwijzing wijst naar een pad dat geen legitieme systeembibliotheek kan zijn, daarom is dit als bevestigd gerapporteerd.'
@@ -747,7 +759,7 @@ detect_host_check_authorized_keys() {
     fi
     names+=("root")
     for user in "${names[@]}"; do
-        home=$(user_home_dir "$user")
+        home=$(detect_host_user_home "$user")
         if [ -z "$home" ]; then
             continue
         fi
@@ -803,7 +815,7 @@ detect_host_check_world_writable() {
         if [ -z "$user" ]; then
             continue
         fi
-        home=$(user_home_dir "$user")
+        home=$(detect_host_user_home "$user")
         base="$home/domains"
         if [ ! -d "$base" ]; then
             continue

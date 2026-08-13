@@ -7,6 +7,11 @@ WP2SHELL_TOOLKIT_VERSION="1.0.0"
 . "$WP2SHELL_ROOT/lib/common.sh"
 . "$WP2SHELL_ROOT/lib/version.sh"
 . "$WP2SHELL_ROOT/lib/discovery.sh"
+. "$WP2SHELL_ROOT/lib/reference.sh"
+. "$WP2SHELL_ROOT/lib/detect_integrity.sh"
+. "$WP2SHELL_ROOT/lib/detect_regex.sh"
+. "$WP2SHELL_ROOT/lib/crosssite.sh"
+. "$WP2SHELL_ROOT/lib/detect_host.sh"
 . "$WP2SHELL_ROOT/lib/detect_files.sh"
 . "$WP2SHELL_ROOT/lib/detect_wp.sh"
 . "$WP2SHELL_ROOT/lib/detect_logs.sh"
@@ -423,6 +428,10 @@ run_detection_over_sites() {
     if ! require_detection_modules; then
         return 1
     fi
+    if declare -F reference_begin_run >/dev/null 2>&1; then
+        reference_begin_run || true
+        reference_purge_expired || true
+    fi
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -442,12 +451,24 @@ run_detection_over_sites() {
     if declare -F detect_logs_server_wide >/dev/null 2>&1; then
         detect_logs_server_wide || true
     fi
+    detect_host_persistence || true
+    crosssite_report || true
+    if declare -F reference_fetch_cap_reached >/dev/null 2>&1 && reference_fetch_cap_reached; then
+        record_finding \
+            "severity=$SEVERITY_MEDIUM" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=reference-fetch-cap-reached" \
+            "title=De limiet op het ophalen van referentiepakketten is bereikt" \
+            "detail=Er zijn deze run meer pakketten nodig dan de ingestelde limiet toestaat, dus niet elke plugin of elk thema is tegen de officiele release vergeleken. Die installaties zijn op dat punt niet gecontroleerd." \
+            "remediation=Verhoog WP2SHELL_REFERENCE_FETCH_CAP of draai de scan opnieuw, dan wordt de cache verder aangevuld."
+    fi
     return 0
 }
 
 require_detection_modules() {
     local missing=() name
-    for name in detect_files_for_site detect_wp_for_site detect_logs_for_site; do
+    for name in detect_files_for_site detect_wp_for_site detect_logs_for_site \
+        detect_integrity_for_site detect_host_persistence crosssite_report; do
         if ! declare -F "$name" >/dev/null 2>&1; then
             missing+=("$name")
         fi
@@ -469,6 +490,7 @@ require_detection_modules() {
 detect_all_for_site() {
     local site_path=$1 owner_user=$2 domain=$3
     detect_files_for_site "$site_path" "$owner_user" || true
+    detect_integrity_for_site "$site_path" "$owner_user" || true
     detect_wp_for_site "$site_path" "$owner_user" "$domain" || true
     detect_logs_for_site "$site_path" "$domain" || true
     return 0

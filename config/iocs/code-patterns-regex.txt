@@ -18,11 +18,9 @@ variable-variable-index:medium:\$\{[[:space:]]*\$[A-Za-z_][A-Za-z0-9_]*[[:space:
 string-concat-obfuscation:medium:['"][A-Za-z0-9_]{1,6}['"][[:space:]]*\.[[:space:]]*['"][A-Za-z0-9_]{1,6}['"][[:space:]]*\.[[:space:]]*['"][A-Za-z0-9_]{1,6}['"][[:space:]]*\.[[:space:]]*['"]
 hex-escape-run:medium:(\\x[0-9a-fA-F]{2}){24,}
 chr-chain:medium:chr[[:space:]]*\([[:space:]]*(hexdec[[:space:]]*\(|[0-9]{1,3}[[:space:]]*\)[[:space:]]*\.[[:space:]]*chr[[:space:]]*\()
-suppressed-upload-handler:medium:error_reporting[[:space:]]*\([[:space:]]*0[[:space:]]*\).{0,600}\$_FILES
-suppressed-upload-handler:medium:\$_FILES.{0,600}error_reporting[[:space:]]*\([[:space:]]*0[[:space:]]*\)
 upload-path-from-request:medium:['"]\.\.?/['"][[:space:]]*\.[[:space:]]*\$_FILES
-cookie-to-sink:medium:\$_COOKIE[[:space:]]*\[[^]]{0,40}\].{0,80}(eval|assert|system)[[:space:]]*\(
-goto-obfuscation:medium:(^|[^[:alnum:]_>$:])goto[[:space:]]+[A-Za-z_][A-Za-z0-9_]{2,}[[:space:]]*;.{0,400}[;{}][[:space:]]*[A-Za-z_][A-Za-z0-9_]{2,}:
+cookie-to-sink:medium:\$_COOKIE[[:space:]]*\[[^]]{0,40}\].{0,40}(eval|assert|system)[[:space:]]*\(
+goto-obfuscation:medium:(^|[^[:alnum:]_>$:])goto[[:space:]]+[A-Za-z_][A-Za-z0-9_]{2,}[[:space:]]*;
 image-code-include:medium:@?[[:space:]]*(include|require)(_once)?[[:space:]]*\(?[[:space:]]*['"][^'"]{0,120}\.(jpe?g|png|gif|ico|bmp|webp|txt|log|csv|dat|woff2?)['"]
 error-suppression:low:@[[:space:]]*(eval|assert|include|require|include_once|require_once|file_put_contents|fwrite|fopen|unlink|system|exec|move_uploaded_file)[[:space:]]*\(
 timelimit-off:low:set_time_limit[[:space:]]*\([[:space:]]*0[[:space:]]*\)

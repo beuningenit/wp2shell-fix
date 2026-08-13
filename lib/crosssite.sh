@@ -18,6 +18,21 @@ WP2SHELL_CROSSSITE_OWNER_CACHE_VALUE=""
 WP2SHELL_CROSSSITE_REPORTED=0
 WP2SHELL_CROSSSITE_SUPPRESSED=0
 
+WP2SHELL_CROSSSITE_GROUP_HASH=""
+WP2SHELL_CROSSSITE_GROUP_OWNERS=" "
+WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT=0
+WP2SHELL_CROSSSITE_GROUP_SITES=" "
+WP2SHELL_CROSSSITE_GROUP_SITE_COUNT=0
+WP2SHELL_CROSSSITE_GROUP_SIGNATURES=" "
+WP2SHELL_CROSSSITE_GROUP_SIGNATURE_COUNT=0
+WP2SHELL_CROSSSITE_GROUP_OCCURRENCES=0
+WP2SHELL_CROSSSITE_GROUP_CONFIRMED=0
+WP2SHELL_CROSSSITE_GROUP_VENDOR=0
+WP2SHELL_CROSSSITE_GROUP_PACKAGE_ONLY=1
+WP2SHELL_CROSSSITE_GROUP_TRUNCATED=0
+WP2SHELL_CROSSSITE_GROUP_EXAMPLES=""
+WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT=0
+
 WP2SHELL_CROSSSITE_IGNORE_RELATIVE_GLOBS=(
     "wp-content/mu-plugins/wp2shell-*.php"
     "wp-content/mu-plugins/wp2shell-*/*"
@@ -51,7 +66,6 @@ crosssite_sanitize_owner() {
     local raw=$1 cleaned
     cleaned=${raw//[^A-Za-z0-9._-]/_}
     if [ -z "$cleaned" ]; then
-        printf '%s' '-'
         return 1
     fi
     printf '%s' "$cleaned"
@@ -59,50 +73,50 @@ crosssite_sanitize_owner() {
 }
 
 crosssite_sanitize_signature() {
-    local raw=$1 cleaned
+    local raw=$1 cleaned limit
+    limit=${WP2SHELL_CROSSSITE_SIGNATURE_MAX_CHARS:-200}
     cleaned=${raw//[^A-Za-z0-9._\/-]/_}
     if [ -z "$cleaned" ]; then
         cleaned='-'
     fi
-    if [ "${#cleaned}" -gt "${WP2SHELL_CROSSSITE_SIGNATURE_MAX_CHARS:-200}" ]; then
-        cleaned=${cleaned:0:${WP2SHELL_CROSSSITE_SIGNATURE_MAX_CHARS:-200}}
+    if [ "${#cleaned}" -gt "$limit" ]; then
+        cleaned=${cleaned:0:$limit}
     fi
     printf '%s' "$cleaned"
     return 0
 }
 
 crosssite_display_path() {
-    local raw=$1
-    local limit=${WP2SHELL_CROSSSITE_DISPLAY_MAX_CHARS:-160}
+    local raw=$1 limit head_size tail_size
+    limit=${WP2SHELL_CROSSSITE_DISPLAY_MAX_CHARS:-160}
     raw=$(sanitize_text "$raw")
     raw=${raw//$'\n'/ }
     raw=${raw//$'\r'/ }
     raw=${raw//$'\t'/ }
     if [ -z "$raw" ]; then
-        raw='onleesbaar pad'
+        raw='pad onleesbaar'
+    fi
+    if [ "$limit" -lt 40 ]; then
+        limit=40
     fi
     if [ "${#raw}" -gt "$limit" ]; then
-        raw="${raw:0:$limit}..."
+        head_size=$((limit / 3))
+        tail_size=$((limit - head_size - 3))
+        raw="${raw:0:$head_size}...${raw: -$tail_size}"
     fi
     printf '%s' "$raw"
     return 0
 }
 
-crosssite_encode() {
-    path_to_base64 "$1"
-    return 0
-}
-
-crosssite_decode() {
+crosssite_decode_path() {
     local encoded=$1 decoded
     decoded=$(printf '%s' "$encoded" | base64 -d 2>/dev/null) || decoded=''
     printf '%s' "$decoded"
     return 0
 }
 
-crosssite_current_uid() {
+crosssite_ensure_uid() {
     if [ -n "$WP2SHELL_CROSSSITE_UID" ]; then
-        printf '%s' "$WP2SHELL_CROSSSITE_UID"
         return 0
     fi
     local value
@@ -111,14 +125,17 @@ crosssite_current_uid() {
         return 1
     fi
     WP2SHELL_CROSSSITE_UID="$value"
-    printf '%s' "$value"
     return 0
 }
 
-crosssite_state_directory() {
-    if [ -n "$WP2SHELL_CROSSSITE_STATE_DIR" ] && [ -d "$WP2SHELL_CROSSSITE_STATE_DIR" ]; then
-        printf '%s' "$WP2SHELL_CROSSSITE_STATE_DIR"
+crosssite_ensure_state_directory() {
+    if [ -n "$WP2SHELL_CROSSSITE_STATE_DIR" ] && [ ! -L "$WP2SHELL_CROSSSITE_STATE_DIR" ] &&
+        [ -d "$WP2SHELL_CROSSSITE_STATE_DIR" ]; then
         return 0
+    fi
+    if ! crosssite_ensure_uid; then
+        log_error "Kan het eigen gebruikersnummer niet bepalen, de kruisvergelijking tussen sites start niet"
+        return 1
     fi
     local base=${TMPDIR:-/tmp}
     base=${base%/}
@@ -129,7 +146,7 @@ crosssite_state_directory() {
     key=${key//[^A-Za-z0-9._-]/_}
     local dir="$base/wp2shell-crosssite-$key"
     if [ -L "$dir" ]; then
-        log_error "Het pad voor de kruisvergelijking is een symlink en wordt niet gebruikt: $dir"
+        log_error "Het werkpad van de kruisvergelijking is een symlink en wordt niet gebruikt: $dir"
         return 1
     fi
     if [ ! -d "$dir" ]; then
@@ -139,39 +156,32 @@ crosssite_state_directory() {
         log_error "Kan de werkmap voor de kruisvergelijking niet aanmaken: $dir"
         return 1
     fi
-    local uid dir_uid dir_mode
-    if ! uid=$(crosssite_current_uid); then
-        log_error "Kan het eigen gebruikersnummer niet bepalen, de kruisvergelijking wordt niet gestart"
-        return 1
-    fi
+    local dir_uid dir_mode
     dir_uid=$(stat -c '%u' -- "$dir" 2>/dev/null) || dir_uid=''
     dir_mode=$(stat -c '%a' -- "$dir" 2>/dev/null) || dir_mode=''
-    if [ "$dir_uid" != "$uid" ] || [ "$dir_mode" != "700" ]; then
-        log_error "De werkmap voor de kruisvergelijking heeft een verkeerde eigenaar of verkeerde rechten: $dir"
+    if [ "$dir_uid" != "$WP2SHELL_CROSSSITE_UID" ] || [ "$dir_mode" != "700" ]; then
+        log_error "De werkmap voor de kruisvergelijking heeft een andere eigenaar of ruimere rechten dan verwacht: $dir"
         return 1
     fi
     WP2SHELL_CROSSSITE_STATE_DIR="$dir"
     register_temp_cleanup "$dir"
-    printf '%s' "$dir"
     return 0
 }
 
-crosssite_state_file() {
-    local dir
-    if ! dir=$(crosssite_state_directory); then
+crosssite_state_directory() {
+    if ! crosssite_ensure_state_directory; then
         return 1
     fi
-    printf '%s/candidates' "$dir"
+    printf '%s' "$WP2SHELL_CROSSSITE_STATE_DIR"
     return 0
 }
 
 crosssite_mark_degraded() {
-    local dir
-    if ! dir=$(crosssite_state_directory); then
-        log_error "De kruisvergelijking mist gegevens en dat kon niet vastgelegd worden"
+    if ! crosssite_ensure_state_directory; then
+        log_error "De kruisvergelijking mist gegevens en dat kon nergens vastgelegd worden"
         return 1
     fi
-    printf '%s\n' "$(timestamp_iso)" >> "$dir/degraded" 2>/dev/null || true
+    printf '%s\n' "$(timestamp_iso)" >> "$WP2SHELL_CROSSSITE_STATE_DIR/degraded" 2>/dev/null || true
     return 0
 }
 
@@ -180,21 +190,20 @@ crosssite_discard_state() {
         return 0
     fi
     case $WP2SHELL_CROSSSITE_STATE_DIR in
-        /tmp/wp2shell-crosssite-*|/var/tmp/wp2shell-crosssite-*)
-            rm -rf -- "$WP2SHELL_CROSSSITE_STATE_DIR" 2>/dev/null || true
-            ;;
         */wp2shell-crosssite-*)
-            rm -rf -- "$WP2SHELL_CROSSSITE_STATE_DIR" 2>/dev/null || true
+            if [ ! -L "$WP2SHELL_CROSSSITE_STATE_DIR" ] && [ -d "$WP2SHELL_CROSSSITE_STATE_DIR" ]; then
+                rm -rf -- "$WP2SHELL_CROSSSITE_STATE_DIR" 2>/dev/null || true
+            fi
             ;;
     esac
     WP2SHELL_CROSSSITE_STATE_DIR=""
     return 0
 }
 
-crosssite_owner_for_site() {
+crosssite_resolve_owner() {
     local site_path=$1 owner=''
-    if [ "$WP2SHELL_CROSSSITE_OWNER_CACHE_SITE" = "$site_path" ] && [ -n "$WP2SHELL_CROSSSITE_OWNER_CACHE_VALUE" ]; then
-        printf '%s' "$WP2SHELL_CROSSSITE_OWNER_CACHE_VALUE"
+    if [ "$WP2SHELL_CROSSSITE_OWNER_CACHE_SITE" = "$site_path" ] &&
+        [ -n "$WP2SHELL_CROSSSITE_OWNER_CACHE_VALUE" ]; then
         return 0
     fi
     if declare -F directadmin_user_from_path >/dev/null 2>&1; then
@@ -211,7 +220,6 @@ crosssite_owner_for_site() {
     fi
     WP2SHELL_CROSSSITE_OWNER_CACHE_SITE="$site_path"
     WP2SHELL_CROSSSITE_OWNER_CACHE_VALUE="$owner"
-    printf '%s' "$owner"
     return 0
 }
 
@@ -251,10 +259,10 @@ crosssite_package_signature() {
 crosssite_signature_token() {
     local relative=$1 signature=''
     if signature=$(crosssite_package_signature "$relative"); then
-        printf 'pkg:%s' "$(crosssite_sanitize_signature "$signature")"
+        printf 'package:%s' "$(crosssite_sanitize_signature "$signature")"
         return 0
     fi
-    printf 'los:%s' "$(crosssite_sanitize_signature "$relative")"
+    printf 'loose:%s' "$(crosssite_sanitize_signature "$relative")"
     return 0
 }
 
@@ -300,16 +308,16 @@ crosssite_record_candidate() {
     local site_path=${1:-}
     local file_path=${2:-}
     local sha256=${3:-}
-    local origin=${4:-$CONFIDENCE_HEURISTIC}
+    local origin=${4:-${CONFIDENCE_HEURISTIC:-heuristic}}
     if [ -z "$site_path" ] || [ -z "$file_path" ]; then
-        log_warn "crosssite_record_candidate zonder sitepad of bestandspad aangeroepen, de kruisvergelijking mist dit bestand"
+        log_warn "crosssite_record_candidate is zonder sitepad of bestandspad aangeroepen, dit bestand doet niet mee aan de kruisvergelijking"
         crosssite_mark_degraded
         return 1
     fi
     site_path=${site_path%/}
     sha256=${sha256,,}
     if ! crosssite_hash_is_usable "$sha256"; then
-        log_warn "Geen bruikbare sha256 voor $file_path, dit bestand doet niet mee aan de kruisvergelijking"
+        log_warn "Geen bruikbare sha256 meegegeven voor $file_path, dit bestand doet niet mee aan de kruisvergelijking"
         crosssite_mark_degraded
         return 1
     fi
@@ -318,49 +326,47 @@ crosssite_record_candidate() {
         return 0
     fi
     local relative
-    relative=$(crosssite_relative_path "$site_path" "$file_path") || \
-        log_debug "Bestand ligt buiten het sitepad, het volledige pad wordt gebruikt: $file_path"
+    relative=$(crosssite_relative_path "$site_path" "$file_path") ||
+        log_debug "Bestand ligt buiten het sitepad, de kruisvergelijking gebruikt het volledige pad: $file_path"
     if is_allowlisted_path "$file_path"; then
-        log_debug "Op de allowlist, telt niet mee in de kruisvergelijking: $file_path"
+        log_debug "Staat op de allowlist, telt niet mee in de kruisvergelijking: $file_path"
         return 0
     fi
     if crosssite_relative_is_ignored "$relative"; then
         log_debug "Uitgesloten pad voor de kruisvergelijking: $relative"
         return 0
     fi
-    local owner
-    if ! owner=$(crosssite_owner_for_site "$site_path"); then
-        log_warn "Kan de eigenaar van $site_path niet bepalen, dit bestand doet niet mee aan de kruisvergelijking"
+    if ! crosssite_resolve_owner "$site_path"; then
+        log_warn "Kan de eigenaar van $site_path niet vaststellen, dit bestand doet niet mee aan de kruisvergelijking"
         crosssite_mark_degraded
         return 1
     fi
-    local flag='heuristiek'
+    if ! crosssite_ensure_state_directory; then
+        log_error "Kan deze kandidaat voor de kruisvergelijking niet opslaan: $file_path"
+        return 1
+    fi
+    local flag='heuristic'
     case $origin in
-        "$CONFIDENCE_HIGH"|confirmed|bevestigd) flag='bevestigd' ;;
+        "${CONFIDENCE_HIGH:-high-confidence}"|confirmed) flag='confirmed' ;;
     esac
-    local vendor='geen'
+    local vendor='plain'
     if crosssite_path_is_vendor "$relative"; then
         vendor='vendor'
     fi
-    local signature
+    local signature site_encoded file_encoded
     signature=$(crosssite_signature_token "$relative")
-    local state_file
-    if ! state_file=$(crosssite_state_file); then
-        log_error "Kan de kandidaat voor de kruisvergelijking niet opslaan: $file_path"
-        return 1
-    fi
-    local site_encoded file_encoded
-    site_encoded=$(crosssite_encode "$site_path")
-    file_encoded=$(crosssite_encode "$file_path")
-    if [ -z "$site_encoded" ] || [ -z "$file_encoded" ]; then
+    site_encoded=$(path_to_base64 "$site_path")
+    file_encoded=$(path_to_base64 "$file_path")
+    if [ -z "$signature" ] || [ -z "$site_encoded" ] || [ -z "$file_encoded" ]; then
         log_warn "Kan de paden voor de kruisvergelijking niet coderen: $file_path"
         crosssite_mark_degraded
         return 1
     fi
     if ! printf '%s %s %s %s %s %s %s\n' \
-        "$sha256" "$owner" "$site_encoded" "$file_encoded" "$signature" "$vendor" "$flag" \
-        >> "$state_file"; then
-        log_error "Kan niet naar het werkbestand van de kruisvergelijking schrijven: $state_file"
+        "$sha256" "$WP2SHELL_CROSSSITE_OWNER_CACHE_VALUE" "$site_encoded" "$file_encoded" \
+        "$signature" "$vendor" "$flag" \
+        >> "$WP2SHELL_CROSSSITE_STATE_DIR/candidates"; then
+        log_error "Kan niet naar het werkbestand van de kruisvergelijking schrijven"
         crosssite_mark_degraded
         return 1
     fi
@@ -393,18 +399,35 @@ crosssite_set_contains() {
     return 1
 }
 
+crosssite_group_add_example() {
+    local owner=$1 file_encoded=$2
+    local maximum=${WP2SHELL_CROSSSITE_MAX_EXAMPLE_SITES:-8}
+    if [ "$WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT" -ge "$maximum" ]; then
+        return 0
+    fi
+    local decoded shown
+    decoded=$(crosssite_decode_path "$file_encoded")
+    shown=$(crosssite_display_path "$decoded")
+    if [ -n "$WP2SHELL_CROSSSITE_GROUP_EXAMPLES" ]; then
+        WP2SHELL_CROSSSITE_GROUP_EXAMPLES="$WP2SHELL_CROSSSITE_GROUP_EXAMPLES; "
+    fi
+    WP2SHELL_CROSSSITE_GROUP_EXAMPLES="$WP2SHELL_CROSSSITE_GROUP_EXAMPLES$owner: $shown"
+    WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT=$((WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT + 1))
+    return 0
+}
+
 crosssite_group_add() {
     local owner=$1 site_encoded=$2 file_encoded=$3 signature=$4 vendor=$5 flag=$6
     local limit=${WP2SHELL_CROSSSITE_TRACK_LIMIT:-2000}
     WP2SHELL_CROSSSITE_GROUP_OCCURRENCES=$((WP2SHELL_CROSSSITE_GROUP_OCCURRENCES + 1))
-    if [ "$flag" = "bevestigd" ]; then
+    if [ "$flag" = "confirmed" ]; then
         WP2SHELL_CROSSSITE_GROUP_CONFIRMED=1
     fi
     if [ "$vendor" = "vendor" ]; then
         WP2SHELL_CROSSSITE_GROUP_VENDOR=1
     fi
     case $signature in
-        pkg:*) ;;
+        package:*) ;;
         *) WP2SHELL_CROSSSITE_GROUP_PACKAGE_ONLY=0 ;;
     esac
     if ! crosssite_set_contains "$WP2SHELL_CROSSSITE_GROUP_OWNERS" "$owner"; then
@@ -426,25 +449,13 @@ crosssite_group_add() {
     if crosssite_set_contains "$WP2SHELL_CROSSSITE_GROUP_SITES" "$site_encoded"; then
         return 0
     fi
-    if [ "$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT" -lt "$limit" ]; then
-        WP2SHELL_CROSSSITE_GROUP_SITES="$WP2SHELL_CROSSSITE_GROUP_SITES$site_encoded "
-        WP2SHELL_CROSSSITE_GROUP_SITE_COUNT=$((WP2SHELL_CROSSSITE_GROUP_SITE_COUNT + 1))
-    else
+    if [ "$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT" -ge "$limit" ]; then
         WP2SHELL_CROSSSITE_GROUP_TRUNCATED=1
         return 0
     fi
-    local maximum=${WP2SHELL_CROSSSITE_MAX_EXAMPLE_SITES:-8}
-    if [ "$WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT" -ge "$maximum" ]; then
-        return 0
-    fi
-    local decoded shown
-    decoded=$(crosssite_decode "$file_encoded")
-    shown=$(crosssite_display_path "$decoded")
-    if [ -n "$WP2SHELL_CROSSSITE_GROUP_EXAMPLES" ]; then
-        WP2SHELL_CROSSSITE_GROUP_EXAMPLES="$WP2SHELL_CROSSSITE_GROUP_EXAMPLES; "
-    fi
-    WP2SHELL_CROSSSITE_GROUP_EXAMPLES="$WP2SHELL_CROSSSITE_GROUP_EXAMPLES$owner: $shown"
-    WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT=$((WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT + 1))
+    WP2SHELL_CROSSSITE_GROUP_SITES="$WP2SHELL_CROSSSITE_GROUP_SITES$site_encoded "
+    WP2SHELL_CROSSSITE_GROUP_SITE_COUNT=$((WP2SHELL_CROSSSITE_GROUP_SITE_COUNT + 1))
+    crosssite_group_add_example "$owner" "$file_encoded"
     return 0
 }
 
@@ -455,11 +466,27 @@ crosssite_group_owner_list() {
     return 0
 }
 
+crosssite_group_example_list() {
+    local examples=$WP2SHELL_CROSSSITE_GROUP_EXAMPLES
+    local hidden=$((WP2SHELL_CROSSSITE_GROUP_SITE_COUNT - WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT))
+    if [ -z "$examples" ]; then
+        examples='geen leesbaar voorbeeldpad beschikbaar'
+    fi
+    if [ "$hidden" -gt 0 ]; then
+        examples="$examples, en nog $hidden andere site(s)"
+    fi
+    printf '%s' "$examples"
+    return 0
+}
+
 crosssite_group_should_skip() {
     local minimum=${WP2SHELL_CROSSSITE_MIN_OWNERS:-3}
     if [ "$WP2SHELL_CROSSSITE_GROUP_CONFIRMED" = "1" ]; then
         minimum=${WP2SHELL_CROSSSITE_MIN_OWNERS_CONFIRMED:-2}
     fi
+    case $minimum in
+        ''|*[!0-9]*) minimum=3 ;;
+    esac
     if [ "$minimum" -lt 2 ]; then
         minimum=2
     fi
@@ -470,11 +497,12 @@ crosssite_group_should_skip() {
         return 1
     fi
     if [ "$WP2SHELL_CROSSSITE_GROUP_VENDOR" = "1" ]; then
-        log_debug "Kruisvergelijking slaat $WP2SHELL_CROSSSITE_GROUP_HASH over, het bestand staat in een vendor-map"
+        log_debug "Kruisvergelijking slaat $WP2SHELL_CROSSSITE_GROUP_HASH over, het bestand hoort bij een gedeelde bibliotheek"
         return 0
     fi
-    if [ "$WP2SHELL_CROSSSITE_GROUP_PACKAGE_ONLY" = "1" ] && [ "$WP2SHELL_CROSSSITE_GROUP_SIGNATURE_COUNT" -le 1 ]; then
-        log_debug "Kruisvergelijking slaat $WP2SHELL_CROSSSITE_GROUP_HASH over, dit is een gedeelde plugin of thema op hetzelfde pad"
+    if [ "$WP2SHELL_CROSSSITE_GROUP_PACKAGE_ONLY" = "1" ] &&
+        [ "$WP2SHELL_CROSSSITE_GROUP_SIGNATURE_COUNT" -le 1 ]; then
+        log_debug "Kruisvergelijking slaat $WP2SHELL_CROSSSITE_GROUP_HASH over, dit is een gedeelde plugin of thema op steeds hetzelfde pad"
         return 0
     fi
     return 1
@@ -498,48 +526,40 @@ crosssite_group_severity() {
 }
 
 crosssite_group_emit() {
-    local severity confidence category title owner_list count_prefix=''
+    local severity owners examples prefix=''
     severity=$(crosssite_group_severity)
+    owners=$(crosssite_group_owner_list)
+    examples=$(crosssite_group_example_list)
     if [ "$WP2SHELL_CROSSSITE_GROUP_TRUNCATED" = "1" ]; then
-        count_prefix='minstens '
+        prefix='minstens '
     fi
-    owner_list=$(crosssite_group_owner_list)
-    local examples="$WP2SHELL_CROSSSITE_GROUP_EXAMPLES"
-    local hidden=$((WP2SHELL_CROSSSITE_GROUP_SITE_COUNT - WP2SHELL_CROSSSITE_GROUP_EXAMPLE_COUNT))
-    if [ "$hidden" -gt 0 ]; then
-        examples="$examples en nog $hidden andere site(s)"
-    fi
-    local shared_note
-    shared_note="Gedeelde pakketten zijn hier al uitgefilterd: een bestand dat bij elk voorkomen op precies hetzelfde pad binnen dezelfde plugin- of themamap staat is overgeslagen, net als alles in een vendor-map, want een premium plugin of een gedeelde bibliotheek staat per definitie op elke site met dezelfde hash."
     local scope_note
-    scope_note="Alleen bestanden die op hun eigen site al als verdacht waren aangemerkt komen in deze vergelijking terecht. Zonder dat filter zou de hele WordPress-core op elke site met zichzelf overeenkomen en zegt een treffer niets."
+    scope_note="Alleen bestanden die op hun eigen site al zelfstandig als verdacht waren aangemerkt komen in deze vergelijking terecht. Zonder dat filter zou de complete WordPress-core en elke veelgebruikte plugin op iedere site met zichzelf overeenkomen en zou een treffer niets betekenen."
+    local match_note
+    match_note="Er is vergeleken op sha256 en niet op pad, want dezelfde dropper krijgt op elke site een andere naam."
     local quarantine_note
     quarantine_note="Deze categorie wordt nooit automatisch in quarantaine gezet, ook niet met clean --apply."
+    local counts
+    counts="Bij elkaar $WP2SHELL_CROSSSITE_GROUP_OCCURRENCES voorkomen(s) op $prefix$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT site(s), verdeeld over $prefix$WP2SHELL_CROSSSITE_GROUP_SIGNATURE_COUNT verschillend(e) pad(en)."
     if [ "$WP2SHELL_CROSSSITE_GROUP_CONFIRMED" = "1" ]; then
-        confidence="$CONFIDENCE_HIGH"
-        category="cross-site-confirmed-hash"
-        title="Bevestigd kwaadaardig bestand staat bij $count_prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT klanten"
         record_finding \
             "severity=$severity" \
-            "confidence=$confidence" \
-            "category=$category" \
-            "title=$title" \
-            "detail=Dit bestand is op minstens een site als bevestigd kwaadaardig aangemerkt en exact dezelfde sha256 staat ook op sites van andere systeemgebruikers: $owner_list. Bij elkaar $WP2SHELL_CROSSSITE_GROUP_OCCURRENCES voorkomen(s) op $count_prefix$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT site(s) en $WP2SHELL_CROSSSITE_GROUP_SIGNATURE_COUNT verschillend(e) pad(en). $scope_note De toegevoegde waarde boven de losse bevindingen zit in de accountgrens: de losse bevinding zegt dat een site besmet is, deze bevinding zegt dat hetzelfde artefact over meerdere klantaccounts heen staat en dat de besmetting zich dus over de server verplaatst heeft in plaats van via een enkele kwetsbare site binnen te zijn gekomen. Voorbeeldpaden: $examples. $quarantine_note" \
-            "evidence=sha256 $WP2SHELL_CROSSSITE_GROUP_HASH, $count_prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT eigenaren, $count_prefix$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT sites" \
-            "remediation=Behandel elk van deze sites als gecompromitteerd, zet de genoemde bestanden na een backup in quarantaine, en zoek naar de gedeelde toegangsweg tussen de accounts, bijvoorbeeld een schrijfbare gedeelde map, een gedeelde FTP-account of een lek in een beheerpaneel."
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=cross-site-confirmed-hash" \
+            "title=Bevestigd kwaadaardig bestand staat bij $prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT verschillende klanten" \
+            "detail=Dit bestand is op minstens een site als bevestigd kwaadaardig aangemerkt, en exact dezelfde sha256 staat ook op installaties van andere systeemgebruikers: $owners. $counts $scope_note $match_note Wat deze bevinding toevoegt boven de losse bevindingen is de accountgrens: een losse bevinding zegt dat een site besmet is, deze zegt dat hetzelfde bestand tot bij andere klanten is gekomen die administratief niets met elkaar te maken hebben. Dat past bij een besmetting die zich over de server verplaatst en niet bij een enkele site die van buitenaf geraakt is. Voorbeeldpaden: $examples. $quarantine_note" \
+            "evidence=sha256 $WP2SHELL_CROSSSITE_GROUP_HASH, $prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT eigenaren, $prefix$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT sites" \
+            "remediation=Behandel alle genoemde installaties als gecompromitteerd, zet de genoemde bestanden na een geslaagde backup in quarantaine, en zoek de gedeelde weg tussen deze accounts, bijvoorbeeld een schrijfbare gedeelde map, hergebruikte FTP-gegevens of een beheerpaneel met te ruime rechten."
         return 0
     fi
-    confidence="$CONFIDENCE_HEURISTIC"
-    category="cross-site-identical-file"
-    title="Zelfde verdachte bestand bij $count_prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT verschillende klanten"
     record_finding \
         "severity=$severity" \
-        "confidence=$confidence" \
-        "category=$category" \
-        "title=$title" \
-        "detail=Een bestand met sha256 $WP2SHELL_CROSSSITE_GROUP_HASH komt byte voor byte terug op sites van $count_prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT verschillende systeemgebruikers: $owner_list. Bij elkaar $WP2SHELL_CROSSSITE_GROUP_OCCURRENCES voorkomen(s) op $count_prefix$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT site(s) en $WP2SHELL_CROSSSITE_GROUP_SIGNATURE_COUNT verschillend(e) pad(en). $scope_note $shared_note Wat dan overblijft is precies wat de losse bevindingen niet kunnen zeggen: die melden per site een twijfelgeval, terwijl identieke inhoud onder klanten die administratief niets met elkaar te maken hebben niet door toeval of door een gedeelde pluginversie te verklaren is. Er is per site vergeleken op hash en niet op pad, want een dropper krijgt op elke site een andere naam. Voorbeeldpaden: $examples. Dit blijft een heuristiek: bekijk de inhoud van deze bestanden handmatig voordat er iets verplaatst wordt. $quarantine_note" \
-        "evidence=sha256 $WP2SHELL_CROSSSITE_GROUP_HASH, $count_prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT eigenaren, $count_prefix$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT sites" \
-        "remediation=Bekijk een van de genoemde bestanden handmatig. Blijkt het kwaadaardig, behandel dan alle genoemde sites als besmet en zoek de gedeelde toegangsweg tussen deze accounts. Blijkt het legitiem, zet het pad dan in WP2SHELL_ALLOWLIST_PATHS."
+        "confidence=$CONFIDENCE_HEURISTIC" \
+        "category=cross-site-identical-file" \
+        "title=Zelfde verdachte bestand bij $prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT verschillende klanten" \
+        "detail=Een bestand met sha256 $WP2SHELL_CROSSSITE_GROUP_HASH komt byte voor byte terug op installaties van $prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT verschillende systeemgebruikers: $owners. $counts $scope_note $match_note Gedeelde pakketten zijn hier al afgevangen: een bestand dat bij elk voorkomen op precies hetzelfde pad binnen dezelfde plugin- of themamap staat is overgeslagen, net als alles in een vendor-map, want een premium plugin of een gedeelde bibliotheek heeft op elke site vanzelf dezelfde hash. Wat overblijft is precies wat de losse bevindingen niet kunnen zeggen: die melden per site een twijfelgeval, terwijl identieke inhoud bij klanten die niets met elkaar te maken hebben niet door toeval of door een gedeelde pluginversie te verklaren is. Voorbeeldpaden: $examples. Dit blijft een heuristiek en is geen bewijs, bekijk de inhoud handmatig voordat er iets verplaatst wordt. $quarantine_note" \
+        "evidence=sha256 $WP2SHELL_CROSSSITE_GROUP_HASH, $prefix$WP2SHELL_CROSSSITE_GROUP_OWNER_COUNT eigenaren, $prefix$WP2SHELL_CROSSSITE_GROUP_SITE_COUNT sites" \
+        "remediation=Bekijk een van de genoemde bestanden handmatig. Blijkt het kwaadaardig, behandel dan alle genoemde installaties als besmet en zoek de gedeelde weg tussen deze accounts. Blijkt het legitiem, neem het pad dan op in WP2SHELL_ALLOWLIST_PATHS zodat het bij een volgende run niet terugkomt."
     return 0
 }
 
@@ -566,9 +586,9 @@ crosssite_report_unavailable() {
         "severity=$SEVERITY_MEDIUM" \
         "confidence=$CONFIDENCE_HIGH" \
         "category=cross-site-correlation-unavailable" \
-        "title=De kruisvergelijking tussen sites is niet uitgevoerd" \
-        "detail=De vergelijking van verdachte bestanden tussen de sites op deze server kon niet draaien. Reden: $reason. Malware die op meerdere klantaccounts tegelijk staat wordt daardoor in deze run niet als zodanig herkend. Het uitblijven van kruisverbanden in dit rapport betekent hier dus niet dat ze er niet zijn." \
-        "remediation=Controleer de schrijfrechten op de tijdelijke map en draai de scan opnieuw."
+        "title=De vergelijking tussen de sites is niet uitgevoerd" \
+        "detail=Het vergelijken van verdachte bestanden tussen de installaties op deze server heeft niet gedraaid. Reden: $reason. Malware die tegelijk bij meerdere klanten staat wordt in deze run dus niet als zodanig herkend. Het ontbreken van kruisverbanden in dit rapport is hier geen uitspraak over de server." \
+        "remediation=Controleer de rechten op de tijdelijke map en draai de scan opnieuw."
     return 0
 }
 
@@ -577,9 +597,9 @@ crosssite_report_degraded() {
         "severity=$SEVERITY_MEDIUM" \
         "confidence=$CONFIDENCE_HIGH" \
         "category=cross-site-correlation-incomplete" \
-        "title=De kruisvergelijking tussen sites is onvolledig" \
-        "detail=Een deel van de verdachte bestanden kon niet aan de kruisvergelijking meedoen, bijvoorbeeld omdat er geen sha256 berekend kon worden of omdat de eigenaar van een installatie niet vast te stellen was. De vergelijking heeft wel gedraaid, maar over een onvolledige verzameling. Een uitkomst zonder kruisverbanden mag daarom niet als bewijs gelezen worden dat malware zich niet over meerdere klanten verspreid heeft." \
-        "remediation=Bekijk het runlogboek op de regels over de kruisvergelijking en draai de scan opnieuw als root."
+        "title=De vergelijking tussen de sites is onvolledig" \
+        "detail=Een deel van de verdachte bestanden kon niet meedoen aan de vergelijking tussen de sites, bijvoorbeeld omdat er geen sha256 beschikbaar was of omdat de eigenaar van een installatie niet vast te stellen was. De vergelijking heeft wel gedraaid, maar over een onvolledige verzameling. Een uitkomst zonder kruisverbanden mag daarom niet gelezen worden als bewijs dat er niets tussen de klanten gedeeld wordt." \
+        "remediation=Bekijk in het runlogboek de regels over de kruisvergelijking en draai de scan opnieuw als root."
     return 0
 }
 
@@ -588,27 +608,26 @@ crosssite_report_suppressed() {
         "severity=$SEVERITY_MEDIUM" \
         "confidence=$CONFIDENCE_HIGH" \
         "category=cross-site-correlation-truncated" \
-        "title=$WP2SHELL_CROSSSITE_SUPPRESSED kruisverbanden zijn niet apart gerapporteerd" \
-        "detail=Er zijn meer bestanden gevonden die bij verschillende klanten identiek terugkomen dan er los gemeld worden. Boven de grens van ${WP2SHELL_CROSSSITE_MAX_REPORTED_HASHES:-50} bevindingen is de rest geteld en niet uitgeschreven, zodat het rapport leesbaar blijft. Deze $WP2SHELL_CROSSSITE_SUPPRESSED gevallen zijn dus wel gevonden en niet weggevallen." \
-        "remediation=Behandel dit als een serverbreed incident en verhoog WP2SHELL_CROSSSITE_MAX_REPORTED_HASHES als u de volledige lijst nodig heeft."
+        "title=$WP2SHELL_CROSSSITE_SUPPRESSED kruisverbanden zijn niet apart uitgeschreven" \
+        "detail=Er zijn meer bestanden gevonden die bij verschillende klanten identiek terugkomen dan er los gemeld worden. Boven de grens van ${WP2SHELL_CROSSSITE_MAX_REPORTED_HASHES:-50} bevindingen is de rest alleen geteld, zodat het rapport leesbaar blijft. Deze $WP2SHELL_CROSSSITE_SUPPRESSED gevallen zijn dus wel gevonden en niet weggevallen." \
+        "remediation=Behandel dit als een serverbreed incident en verhoog WP2SHELL_CROSSSITE_MAX_REPORTED_HASHES als de volledige lijst nodig is."
     return 0
 }
 
 crosssite_report() {
     WP2SHELL_CROSSSITE_REPORTED=0
     WP2SHELL_CROSSSITE_SUPPRESSED=0
-    local dir
-    if ! dir=$(crosssite_state_directory); then
+    if ! crosssite_ensure_state_directory; then
         crosssite_report_unavailable "de werkmap voor de vergelijking kon niet veilig aangemaakt worden"
         return 0
     fi
     local degraded=0
-    if [ -e "$dir/degraded" ]; then
+    if [ -e "$WP2SHELL_CROSSSITE_STATE_DIR/degraded" ]; then
         degraded=1
     fi
-    local state="$dir/candidates"
+    local state="$WP2SHELL_CROSSSITE_STATE_DIR/candidates"
     if [ ! -s "$state" ]; then
-        log_debug "Geen kandidaten voor de kruisvergelijking"
+        log_debug "Geen kandidaten voor de vergelijking tussen sites"
         if [ "$degraded" = "1" ]; then
             crosssite_report_degraded
         fi
@@ -616,22 +635,23 @@ crosssite_report() {
         return 0
     fi
     local sorted status=0
-    sorted=$(mktemp -t wp2shell-crosssite-sorted.XXXXXXXX) || {
+    if ! sorted=$(mktemp -t wp2shell-crosssite-sorted.XXXXXXXX); then
         crosssite_report_unavailable "er kon geen tijdelijk bestand aangemaakt worden om de kandidaten te sorteren"
         crosssite_discard_state
         return 0
-    }
+    fi
     register_temp_cleanup "$sorted"
     LC_ALL=C "${WP2SHELL_SORT:-sort}" -u -- "$state" > "$sorted" 2>/dev/null || status=$?
-    if [ "$status" -ne 0 ] || [ ! -s "$sorted" ]; then
+    if [ "$status" -ne 0 ]; then
         crosssite_report_unavailable "het sorteren van de kandidaten gaf exitcode $status"
         rm -f -- "$sorted"
         crosssite_discard_state
         return 0
     fi
     crosssite_group_reset
-    local hash owner site_encoded file_encoded signature vendor flag
-    while IFS=' ' read -r hash owner site_encoded file_encoded signature vendor flag || [ -n "$hash" ]; do
+    local hash='' owner='' site_encoded='' file_encoded='' signature='' vendor='' flag=''
+    while IFS=' ' read -r hash owner site_encoded file_encoded signature vendor flag ||
+        [ -n "$hash" ]; do
         if [ -z "$hash" ] || [ -z "$owner" ] || [ -z "$site_encoded" ] || [ -z "$file_encoded" ]; then
             continue
         fi
@@ -651,7 +671,7 @@ crosssite_report() {
     if [ "$degraded" = "1" ]; then
         crosssite_report_degraded
     fi
-    log_info "Kruisvergelijking klaar, $WP2SHELL_CROSSSITE_REPORTED kruisverband(en) gemeld"
+    log_info "Vergelijking tussen sites klaar, $WP2SHELL_CROSSSITE_REPORTED kruisverband(en) gemeld"
     crosssite_discard_state
     return 0
 }
