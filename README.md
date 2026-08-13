@@ -48,16 +48,28 @@ proof-of-concept-code die admin-wachtwoordhashes uitleest.
 
 ## Installeren
 
-Haal de toolkit op de server waar je vandaan uitrolt, en rol daarna uit:
+Draai dit op elke server waar de toolkit moet komen:
 
 ```bash
 git clone https://github.com/BeuningenIT/wp2shell-fix.git
 cd wp2shell-fix
-./deploy.sh --host web01.beuningenit.nl --install-cron
+./deploy.sh --install-cron
 ```
 
-`deploy.sh` pakt in vanuit de map waarin het script zelf staat, dus draai het vanuit de
+Zonder opties installeert `deploy.sh` op de machine waar je hem draait. Dat moet als root,
+want hij schrijft naar `/opt/wp2shell` en `/var`. Met `--dry-run` zie je eerst wat er zou
+gebeuren, en dat mag wel zonder root.
+
+Gebruik de https-url en niet de ssh-url, want die vraagt om een sleutel op de server.
+`deploy.sh` werkt vanuit de map waarin het script zelf staat, dus draai het vanuit de
 uitgepakte repository en niet vanuit een map waar alleen dat ene script ligt.
+
+Wil je vanaf een beheermachine naar een andere server uitrollen, dan kan dat met
+`--host`:
+
+```bash
+./deploy.sh --install-cron --host web02.beuningenit.nl
+```
 
 De toolkit draait per server. Voer `deploy.sh` uit voor elke machine apart.
 
