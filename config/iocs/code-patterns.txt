@@ -15,12 +15,18 @@ sink:medium:proc_open(
 sink:medium:popen(
 sink:medium:system(
 deprecated:medium:create_function(
-rest-open:high:permission_callback' => '__return_true
-rest-open:high:permission_callback" => "__return_true
+rest-open:low:permission_callback' => '__return_true
+rest-open:low:permission_callback" => "__return_true
+rest-open:low:permission_callback'=>'__return_true
+rest-open:low:permission_callback"=>"__return_true
+rest-open:low:permission_callback' =>'__return_true
+rest-open:low:permission_callback'=> '__return_true
+rest-open:low:permission_callback' => __return_true
+rest-open:low:permission_callback" => __return_true
 rest-namespace:high:morning/v1
 obfuscation:low:base64_decode(
 obfuscation:low:gzinflate(
 obfuscation:low:str_rot13(
 obfuscation:low:hex2bin(
-prepend:high:auto_prepend_file
-fake-author:medium:Author: WordPress.org Community
+prepend:low:auto_prepend_file
+fake-author:high:Author: WordPress.org Community

