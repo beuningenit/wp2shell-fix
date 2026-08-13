@@ -339,6 +339,23 @@ expect_equal "onschuldige inhoud onder een andere naam telt niet als wachter" "n
 expect_equal "een te groot bestand telt niet als wachter" "nee" \
     "$(detect_files_is_harmless_directory_guard "$GUARD_SITE/wp-content/uploads/index.php" 5000 && printf 'ja' || printf 'nee')"
 
+BIG_SITE="$FIXTURE/bigsite"
+mkdir -p "$BIG_SITE/wp-includes" "$BIG_SITE/wp-content/plugins"
+{
+    printf '<?php\n'
+    printf '$wp_version = %s7.0.3%s;\n' "'" "'"
+} > "$BIG_SITE/wp-includes/version.php"
+printf '<?php\n' > "$BIG_SITE/wp-config.php"
+printf '<?php\n' > "$BIG_SITE/wp-content/plugins/groot.php"
+head -c 6000000 /dev/zero | tr '\0' 'A' >> "$BIG_SITE/wp-content/plugins/groot.php"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+detect_files_for_site "$BIG_SITE" "$(id -un)" >/dev/null 2>&1
+expect_equal "een te groot PHP-bestand wordt niet stil overgeslagen" "1" \
+    "$("${WP2SHELL_GREP:-grep}" -c 'oversized-php-unscanned' "$WP2SHELL_FINDINGS_FILE" || true)"
+expect_equal "en het blokkeert het schoon-oordeel niet" "nee" \
+    "$(category_indicates_blind_spot "oversized-php-unscanned" && printf 'ja' || printf 'nee')"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
