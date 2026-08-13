@@ -1,6 +1,7 @@
 WP2SHELL_DETECT_WP_LOADED=1
 
 WP2SHELL_DETECT_WP_FAILED_CHECKS=()
+WP2SHELL_DETECT_WP_CHECK_COMPLETED=0
 
 WP2SHELL_DETECT_WP_MODULE_DIR=""
 if [ -n "${BASH_SOURCE[0]:-}" ]; then
@@ -773,6 +774,7 @@ detect_wp_core_checksums() {
             "title=De core-integriteitscontrole heeft geen resultaat opgeleverd" \
             "detail=wp core verify-checksums leverde geen enkele uitvoer op en eindigde met exitcode $status. Dat wijst op een tijdslimiet, ontbrekende uitgaande verbinding naar api.wordpress.org, of een afgebroken proces. Deze installatie is dus niet op core-integriteit gecontroleerd en mag niet als schoon gelezen worden." \
             "remediation=Draai wp core verify-checksums --include-root handmatig op deze site en controleer of de server api.wordpress.org kan bereiken."
+        detect_wp_mark_check_complete
         return 0
     fi
     local error_line
@@ -860,6 +862,7 @@ detect_wp_core_checksums() {
             "remediation=Bekijk de ruwe uitvoer handmatig en meld het afwijkende formaat zodat de parser bijgewerkt kan worden."
     fi
     log_info "Core-integriteit $site_path: toegevoegd $WP2SHELL_DETECT_WP_CORE_ADDED, gewijzigd $WP2SHELL_DETECT_WP_CORE_MODIFIED, ontbrekend $WP2SHELL_DETECT_WP_CORE_MISSING"
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -893,6 +896,7 @@ detect_wp_plugin_checksums() {
             "title=De plugin-integriteitscontrole heeft geen resultaat opgeleverd" \
             "detail=wp plugin verify-checksums leverde geen uitvoer op en eindigde met exitcode $status. De plugins van deze installatie zijn dus niet geverifieerd en mogen niet als schoon gelezen worden." \
             "remediation=Draai wp plugin verify-checksums --all handmatig op deze site."
+        detect_wp_mark_check_complete
         return 0
     fi
     local error_line
@@ -976,6 +980,7 @@ detect_wp_plugin_checksums() {
             "remediation=Vergelijk deze plugins handmatig met een schone kopie van de leverancier of met een eerdere backup."
     fi
     log_info "Plugin-integriteit $site_path: afwijkingen $WP2SHELL_DETECT_WP_PLUGIN_ISSUES, niet geverifieerd $WP2SHELL_DETECT_WP_PLUGIN_SKIPPED"
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -1014,6 +1019,7 @@ detect_wp_theme_checksum_gap() {
         "detail=Er bestaat geen wp theme verify-checksums in enige WP-CLI-versie, dus themabestanden zijn in deze controle niet op integriteit getoetst. Dat is relevant omdat droppers juist vaak in functions.php en 404.php van een thema belanden. Deze bevinding is informatief en zegt niets over besmetting." \
         "evidence=$(detect_wp_shorten "$evidence" 400)" \
         "remediation=Vergelijk de themabestanden handmatig met een schone kopie of met een backup van voor 17 juli 2026."
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -1065,6 +1071,7 @@ detect_wp_administrator_accounts() {
             "title=De lijst met beheerders kon niet opgehaald worden" \
             "detail=wp user list voor de rol administrator eindigde met exitcode $status en leverde geen bruikbare uitvoer op. De beheerdersaccounts van deze installatie zijn dus niet gecontroleerd, wat juist de kernaanwijzing is bij deze aanval." \
             "remediation=Draai wp user list --role=administrator handmatig op deze site."
+        detect_wp_mark_check_complete
         return 0
     fi
     if ! detect_wp_json_objects_to_lines "$admins_file" > "$rows_file" 2>/dev/null; then
@@ -1076,6 +1083,7 @@ detect_wp_administrator_accounts() {
             "title=De lijst met beheerders was niet leesbaar" \
             "detail=De JSON-uitvoer van wp user list kon niet ontleed worden. De beheerdersaccounts zijn dus niet gecontroleerd." \
             "remediation=Draai wp user list --role=administrator --format=json handmatig en beoordeel de uitvoer."
+        detect_wp_mark_check_complete
         return 0
     fi
     local window_datetime window_number
@@ -1163,6 +1171,7 @@ detect_wp_administrator_accounts() {
             "remediation=Controleer de tabel usermeta op capabilities-rijen en herstel het beheerdersaccount van de klant."
     fi
     log_info "Beheerders $site_path: totaal $WP2SHELL_DETECT_WP_ADMIN_TOTAL, binnen venster $WP2SHELL_DETECT_WP_ADMIN_IN_WINDOW"
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -1457,7 +1466,15 @@ detect_wp_check_active_plugins() {
     WP2SHELL_DETECT_WP_ACTIVE_PLUGINS_FILE=""
     plugins_dir=$(detect_wp_plugins_directory "$site_path" "$owner_user") || plugins_dir=''
     if [ -z "$plugins_dir" ]; then
-        return 0
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_MEDIUM" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=active-plugins-directory-unknown" \
+            "title=De pluginmap kon niet bepaald worden" \
+            "detail=Zonder de pluginmap kan niet gecontroleerd worden of de actieve plugins ook echt op schijf staan. Een plugin die actief is maar ontbreekt, of andersom, is een bekende aanwijzing voor manipulatie. Dit onderdeel is dus niet gecontroleerd." \
+            "remediation=Controleer of wp plugin path werkt op deze site en of wp-content/plugins bestaat."
+        return 1
     fi
     raw_file=$(detect_wp_work_file active-plugins.json)
     entries_file=$(detect_wp_work_file active-plugins.txt)
@@ -1471,10 +1488,19 @@ detect_wp_check_active_plugins() {
             "title=De lijst met actieve plugins kon niet gelezen worden" \
             "detail=De optie active_plugins kon niet opgehaald worden, dus er is niet gecontroleerd of alle actieve plugins ook echt op schijf staan." \
             "remediation=Draai wp option get active_plugins handmatig op deze site."
+        detect_wp_mark_check_complete
         return 0
     fi
     if ! detect_wp_json_values_to_lines "$raw_file" > "$entries_file" 2>/dev/null; then
-        return 0
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_MEDIUM" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=db-active-plugins-unparsable" \
+            "title=De lijst met actieve plugins was niet te lezen" \
+            "detail=De waarde van active_plugins leverde uitvoer op die niet te verwerken was. Daardoor is niet gecontroleerd of de actieve plugins overeenkomen met wat er op schijf staat, en dat is juist een van de plekken waar manipulatie zichtbaar wordt." \
+            "remediation=Draai wp option get active_plugins handmatig op deze site en bekijk waarom de uitvoer afwijkt."
+        return 1
     fi
     WP2SHELL_DETECT_WP_ACTIVE_PLUGINS_FILE="$entries_file"
     detect_wp_reset_item_budget
@@ -1516,6 +1542,7 @@ detect_wp_check_active_plugins() {
             "evidence=active_plugins bevat $entry" \
             "remediation=Controleer de tabel options op de rij active_plugins en vergelijk met een backup van voor 17 juli 2026."
     done < "$entries_file"
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -1770,6 +1797,7 @@ detect_wp_database_persistence() {
             "detail=wp db query werkt niet op deze installatie. Dat kan komen door ontbrekende rechten van de databasegebruiker, een ontbrekende mysql-client of een geblokkeerde proc_open. De databasecontroles zijn juist het belangrijkste bewijsmateriaal bij deze aanval, omdat een netjes uitgevoerde inbraak nauwelijks sporen in de webserverlogs achterlaat. Deze installatie mag daarom niet als schoon gelezen worden." \
             "evidence=$error_line" \
             "remediation=Controleer de databasegegevens in wp-config.php, de rechten van de databasegebruiker en de beschikbaarheid van de mysql-client."
+        detect_wp_mark_check_complete
         return 0
     fi
     if ! prefix=$(detect_wp_resolve_table_prefix "$site_path" "$owner_user"); then
@@ -1782,6 +1810,7 @@ detect_wp_database_persistence() {
             "title=De tabelprefix kon niet veilig bepaald worden" \
             "detail=De tabelprefix van deze installatie is niet vast te stellen, of bevat tekens die niet in een tabelnaam thuishoren. Er worden geen queries uitgevoerd met een prefix die niet gevalideerd is, dus de databasecontroles zijn overgeslagen." \
             "remediation=Controleer de regel met table_prefix in wp-config.php."
+        detect_wp_mark_check_complete
         return 0
     fi
     WP2SHELL_DETECT_WP_TABLE_PREFIX="$prefix"
@@ -1791,6 +1820,7 @@ detect_wp_database_persistence() {
     detect_wp_check_bridge_posts "$site_path" "$owner_user" "$prefix"
     detect_wp_check_oembed_options "$site_path" "$owner_user" "$prefix"
     detect_wp_check_user_gaps "$site_path" "$owner_user" "$prefix"
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -1896,6 +1926,7 @@ detect_wp_scheduled_tasks() {
             "evidence=$(detect_wp_shorten "$(detect_wp_join_with "; " "${unknown_hooks[@]}")" 600)" \
             "remediation=Vergelijk deze lijst met een eerdere meting van dezelfde site en zoek per onbekende hook op welke plugin die registreert."
     fi
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -1951,6 +1982,7 @@ detect_wp_auto_update_posture() {
             "title=wp-config.php is niet gevonden of niet leesbaar" \
             "detail=Zonder wp-config.php is niet vast te stellen of automatische updates geblokkeerd zijn. Juist de installaties die automatische updates uitzetten stonden het langst bloot aan dit lek." \
             "remediation=Controleer waar wp-config.php staat en of de scan die mag lezen."
+        detect_wp_mark_check_complete
         return 0
     fi
     if value=$(detect_wp_config_constant_value "$config_file" AUTOMATIC_UPDATER_DISABLED); then
@@ -1969,6 +2001,7 @@ detect_wp_auto_update_posture() {
         esac
     fi
     if [ "${#blocking[@]}" -eq 0 ]; then
+        detect_wp_mark_check_complete
         return 0
     fi
     record_finding \
@@ -1981,6 +2014,7 @@ detect_wp_auto_update_posture() {
         "file=$config_file" \
         "evidence=$(detect_wp_join_with "; " "${blocking[@]}")" \
         "remediation=Werk deze site met voorrang bij en zet daarna automatische updates voor kleine versies weer aan, in overleg met de klant."
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -1995,7 +2029,15 @@ detect_wp_object_cache_context() {
         fi
     fi
     if ! content_dir=$(detect_wp_content_directory "$site_path" "$owner_user"); then
-        return 0
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_MEDIUM" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=content-directory-unknown" \
+            "title=De wp-content map kon niet bepaald worden" \
+            "detail=Zonder wp-content kan de object cache drop-in niet beoordeeld worden. Dat bestand is een bekende plek voor persistentie, dus dit onderdeel is niet gecontroleerd." \
+            "remediation=Controleer of wp-content bestaat en leesbaar is voor de scan."
+        return 1
     fi
     drop_in="$content_dir/object-cache.php"
     if [ ! -f "$drop_in" ]; then
@@ -2007,6 +2049,7 @@ detect_wp_object_cache_context() {
             "title=Geen persistente object cache aanwezig" \
             "detail=Er staat geen object-cache.php in wp-content, dus deze installatie heeft geen persistente object cache. Dit is uitsluitend context.$litespeed_note Het maakt de site niet veilig en neemt geen van beide kwetsbaarheden weg: de stap naar code-uitvoering in deze keten heeft juist geen persistente object cache nodig, en de SQL-injectie werkt hoe dan ook. Er zijn gehashte inloggegevens buitgemaakt voordat de details van de code-uitvoering openbaar waren." \
             "remediation=Behandel dit niet als maatregel. Bijwerken naar een gepatchte versie is de enige oplossing."
+        detect_wp_mark_check_complete
         return 0
     fi
     size=$(file_size_bytes "$drop_in") || size=0
@@ -2023,6 +2066,7 @@ detect_wp_object_cache_context() {
             "file=$drop_in" \
             "sha1=$digest" \
             "remediation=Behandel deze site als gecompromitteerd. Plaats het bestand in de opschoonstap in quarantaine en roteer alle inloggegevens en salts."
+        detect_wp_mark_check_complete
         return 0
     fi
     local max_bytes=${WP2SHELL_HEURISTIC_MAX_FILE_BYTES:-5242880}
@@ -2040,6 +2084,7 @@ detect_wp_object_cache_context() {
             "file=$drop_in" \
             "sha1=$digest" \
             "remediation=Bekijk dit bestand handmatig."
+        detect_wp_mark_check_complete
         return 0
     fi
     local function_name
@@ -2069,6 +2114,7 @@ detect_wp_object_cache_context() {
             "file=$drop_in" \
             "sha1=$digest" \
             "remediation=Behandel deze site als gecompromitteerd en plaats het bestand in de opschoonstap in quarantaine."
+        detect_wp_mark_check_complete
         return 0
     fi
     if [ "${#implemented[@]}" -lt 3 ]; then
@@ -2083,6 +2129,7 @@ detect_wp_object_cache_context() {
             "sha1=$digest" \
             "evidence=gevonden functies: $(detect_wp_join_with ", " "${implemented[@]+"${implemented[@]}"}")" \
             "remediation=Bekijk dit bestand handmatig en vergelijk het met de drop-in van de cacheplugin die de klant gebruikt."
+        detect_wp_mark_check_complete
         return 0
     fi
     record_finding \
@@ -2095,6 +2142,7 @@ detect_wp_object_cache_context() {
         "file=$drop_in" \
         "sha1=$digest" \
         "remediation=Behandel dit niet als maatregel. Bijwerken naar een gepatchte versie blijft nodig."
+    detect_wp_mark_check_complete
     return 0
 }
 
@@ -2114,13 +2162,24 @@ detect_wp_report_admin_truncation() {
     return 0
 }
 
+detect_wp_mark_check_complete() {
+    WP2SHELL_DETECT_WP_CHECK_COMPLETED=1
+    return 0
+}
+
 detect_wp_run_child_check() {
     local label=$1
     shift
     local status=0
+    WP2SHELL_DETECT_WP_CHECK_COMPLETED=0
     "$@" || status=$?
     if [ "$status" -ne 0 ]; then
         log_warn "$label is voortijdig gestopt met exitcode $status"
+        WP2SHELL_DETECT_WP_FAILED_CHECKS+=("$label")
+        return 0
+    fi
+    if [ "$WP2SHELL_DETECT_WP_CHECK_COMPLETED" != "1" ]; then
+        log_warn "$label is gestopt zonder af te ronden"
         WP2SHELL_DETECT_WP_FAILED_CHECKS+=("$label")
     fi
     return 0

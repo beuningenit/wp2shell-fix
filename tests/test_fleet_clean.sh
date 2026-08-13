@@ -28,6 +28,7 @@ WP_STUB="$FIXTURE/wp-stub"
     printf '    *" is-installed "*) exit 0 ;;\n'
     printf '    *" db prefix "*) printf %swp_\\n%s; exit 0 ;;\n' "'" "'"
     printf '    *" db query "*) exit 0 ;;\n'
+    printf '    *" option get active_plugins "*) printf %s[]\\n%s; exit 0 ;;\n' "'" "'"
     printf '    *" db export - "*) printf -- %s-- dump\\nCREATE TABLE wp_posts (id int);\\n%s; exit 0 ;;\n' "'" "'"
     printf '    *" core version "*) printf %s7.0.3\\n%s; exit 0 ;;\n' "'" "'"
     printf '    *" verify-checksums "*) printf %sSuccess: WordPress installation verifies against checksums.\\n%s; exit 0 ;;\n' "'" "'"

@@ -210,6 +210,7 @@ case " $* " in
     *" core version "*) printf '7.0.3\n'; exit 0 ;;
     *" verify-checksums "*) printf 'Success: WordPress installation verifies against checksums.\n'; exit 0 ;;
     *" user list "*) printf '[]\n'; exit 0 ;;
+    *" option get active_plugins "*) printf '[]\n'; exit 0 ;;
     *" event list "*) printf 'geen-json-maar-wel-gevuld\n'; exit 0 ;;
     *) exit 0 ;;
 esac
@@ -217,7 +218,7 @@ STUBEOF
 chmod 0755 "$WP_BADCRON"
 
 CRON_SITE="$FIXTURE/cronsite"
-mkdir -p "$CRON_SITE/wp-includes" "$CRON_SITE/wp-admin" "$CRON_SITE/wp-content/plugins"
+mkdir -p "$CRON_SITE/wp-includes" "$CRON_SITE/wp-admin" "$CRON_SITE/wp-content/plugins" "$CRON_SITE/wp-content/uploads"
 {
     printf '<?php\n'
     printf '$wp_version = %s7.0.3%s;\n' "'" "'"
@@ -242,6 +243,50 @@ expect_equal "de onvolledige controle wordt apart vastgelegd" "1" \
 CRON_PROBLEMS=$(verification_completeness_problems "$CRON_RECHECK" "$CRON_STATUS")
 expect_equal "en die blokkeert het schoon-oordeel" "ja" \
     "$([ -n "$CRON_PROBLEMS" ] && printf 'ja' || printf 'nee')"
+
+WP_BADPLUGINS="$FIXTURE/wp-badplugins"
+cat > "$WP_BADPLUGINS" <<'STUBEOF'
+#!/bin/bash
+case " $* " in
+    *" is-installed "*) exit 0 ;;
+    *" db prefix "*) printf 'wp_\n'; exit 0 ;;
+    *" db query "*) exit 0 ;;
+    *" core version "*) printf '7.0.3\n'; exit 0 ;;
+    *" verify-checksums "*) printf 'Success: WordPress installation verifies against checksums.\n'; exit 0 ;;
+    *" user list "*) printf '[]\n'; exit 0 ;;
+    *" event list "*) printf '[]\n'; exit 0 ;;
+    *" option get active_plugins "*) printf 'geen-json-maar-wel-gevuld\n'; exit 0 ;;
+    *) exit 0 ;;
+esac
+STUBEOF
+chmod 0755 "$WP_BADPLUGINS"
+
+PLUGIN_RECHECK="$FIXTURE/plugin-recheck.ndjson"
+SAVED_CLI=${WP2SHELL_WP_CLI_RESOLVED:-}
+SAVED_FINDINGS=$WP2SHELL_FINDINGS_FILE
+WP2SHELL_WP_CLI_RESOLVED="$WP_BADPLUGINS"
+PLUGIN_STATUS=0
+rerun_detection_into "$CRON_SITE" "$(id -un)" "cron.nl" "$PLUGIN_RECHECK" || PLUGIN_STATUS=$?
+WP2SHELL_WP_CLI_RESOLVED=$SAVED_CLI
+WP2SHELL_FINDINGS_FILE=$SAVED_FINDINGS
+
+expect_equal "onleesbare active_plugins wordt gemeld" "1" \
+    "$("${WP2SHELL_GREP:-grep}" -c 'db-active-plugins-unparsable' "$PLUGIN_RECHECK" || true)"
+expect_equal "de niet afgeronde controle wordt vastgelegd" "1" \
+    "$("${WP2SHELL_GREP:-grep}" -c 'wp-checks-incomplete' "$PLUGIN_RECHECK" || true)"
+
+PLUGIN_PROBLEMS=$(verification_completeness_problems "$PLUGIN_RECHECK" "$PLUGIN_STATUS")
+expect_equal "en die blokkeert het schoon-oordeel" "ja" \
+    "$([ -n "$PLUGIN_PROBLEMS" ] && printf 'ja' || printf 'nee')"
+
+expect_equal "een controle die zich niet afmeldt telt als onafgerond" "1" \
+    "$(WP2SHELL_DETECT_WP_FAILED_CHECKS=(); WP2SHELL_DETECT_WP_CHECK_COMPLETED=0; \
+       detect_wp_run_child_check "proefcontrole" true >/dev/null 2>&1; \
+       printf '%s' "${#WP2SHELL_DETECT_WP_FAILED_CHECKS[@]}")"
+expect_equal "een controle die zich wel afmeldt telt als afgerond" "0" \
+    "$(WP2SHELL_DETECT_WP_FAILED_CHECKS=(); WP2SHELL_DETECT_WP_CHECK_COMPLETED=0; \
+       detect_wp_run_child_check "proefcontrole" detect_wp_mark_check_complete >/dev/null 2>&1; \
+       printf '%s' "${#WP2SHELL_DETECT_WP_FAILED_CHECKS[@]}")"
 
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
