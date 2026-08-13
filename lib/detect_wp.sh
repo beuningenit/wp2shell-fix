@@ -1867,6 +1867,7 @@ detect_wp_scheduled_tasks() {
             "title=De geplande taken konden niet opgehaald worden" \
             "detail=wp cron event list eindigde met exitcode $status en leverde geen bruikbare uitvoer op. Geplande taken zijn een gangbare plek voor persistentie, dus dit onderdeel is niet gecontroleerd." \
             "remediation=Draai wp cron event list handmatig op deze site."
+        detect_wp_mark_check_complete
         return 0
     fi
     if ! detect_wp_json_objects_to_lines "$cron_file" > "$rows_file" 2>/dev/null; then
