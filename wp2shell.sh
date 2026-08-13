@@ -423,15 +423,8 @@ report_version_findings() {
     return 0
 }
 
-run_detection_over_sites() {
+run_detection_sequential() {
     local line site_path owner_user domain rc
-    if ! require_detection_modules; then
-        return 1
-    fi
-    if declare -F reference_begin_run >/dev/null 2>&1; then
-        reference_begin_run || true
-        reference_purge_expired || true
-    fi
     while IFS= read -r line || [ -n "$line" ]; do
         if [ -z "$line" ]; then
             continue
@@ -448,6 +441,89 @@ run_detection_over_sites() {
             log_warn "Detectie op $site_path eindigde met exitcode $rc"
         fi
     done < "$WP2SHELL_SITES_FILE"
+    return 0
+}
+
+run_detection_parallel() {
+    local jobs=$1
+    local worker_dir index=0 line site_path owner_user domain
+    local total_fetch_cap=${WP2SHELL_REFERENCE_MAX_FETCHES_PER_RUN:-60}
+    case $total_fetch_cap in
+        ''|*[!0-9]*) total_fetch_cap=60 ;;
+    esac
+    local worker_fetch_cap=$(( total_fetch_cap / jobs ))
+    if [ "$worker_fetch_cap" -lt 1 ]; then
+        worker_fetch_cap=1
+    fi
+    log_debug "Ophaallimiet per worker: $worker_fetch_cap van in totaal $total_fetch_cap"
+    worker_dir=$(make_temp_dir wp2shell-detect)
+    register_temp_cleanup "$worker_dir"
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        owner_user=$(site_record_field "$line" effective_user) || owner_user=''
+        domain=$(site_record_field "$line" domain) || domain=''
+        if [ -z "$site_path" ]; then
+            continue
+        fi
+        index=$((index + 1))
+        (
+            WP2SHELL_FINDINGS_FILE="$worker_dir/$index.ndjson"
+            : > "$WP2SHELL_FINDINGS_FILE"
+            WP2SHELL_REFERENCE_RESULT_FILE="$worker_dir/$index.reference"
+            WP2SHELL_REFERENCE_MAX_FETCHES_PER_RUN="$worker_fetch_cap"
+            export WP2SHELL_REFERENCE_RESULT_FILE WP2SHELL_REFERENCE_MAX_FETCHES_PER_RUN
+            detect_all_for_site "$site_path" "$owner_user" "$domain"
+        ) &
+        while [ "$(jobs -rp | wc -l)" -ge "$jobs" ]; do
+            wait -n 2>/dev/null || true
+        done
+    done < "$WP2SHELL_SITES_FILE"
+    wait
+    local worker_file
+    for worker_file in "$worker_dir"/*.ndjson; do
+        if [ -f "$worker_file" ] && [ -s "$worker_file" ]; then
+            cat -- "$worker_file" >> "$WP2SHELL_FINDINGS_FILE"
+        fi
+    done
+    log_info "$index sites parallel gescand met maximaal $jobs tegelijk"
+    return 0
+}
+
+feed_crosssite_over_all_sites() {
+    local line site_path
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [ -z "$line" ]; then
+            continue
+        fi
+        site_path=$(site_record_field "$line" site_path) || site_path=''
+        if [ -n "$site_path" ]; then
+            feed_crosssite_from_findings "$site_path" || true
+        fi
+    done < "$WP2SHELL_SITES_FILE"
+    return 0
+}
+
+run_detection_over_sites() {
+    if ! require_detection_modules; then
+        return 1
+    fi
+    if declare -F reference_begin_run >/dev/null 2>&1; then
+        reference_begin_run || true
+        reference_purge_expired || true
+    fi
+    local jobs=${WP2SHELL_PARALLEL_JOBS:-1}
+    case $jobs in
+        ''|*[!0-9]*) jobs=1 ;;
+    esac
+    if [ "$jobs" -le 1 ]; then
+        run_detection_sequential
+    else
+        run_detection_parallel "$jobs"
+    fi
+    feed_crosssite_over_all_sites
     if declare -F detect_logs_server_wide >/dev/null 2>&1; then
         detect_logs_server_wide || true
     fi
@@ -566,7 +642,6 @@ detect_all_for_site() {
     detect_integrity_for_site "$site_path" "$owner_user" || true
     detect_wp_for_site "$site_path" "$owner_user" "$domain" || true
     detect_logs_for_site "$site_path" "$domain" || true
-    feed_crosssite_from_findings "$site_path" || true
     return 0
 }
 

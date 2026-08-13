@@ -13,6 +13,7 @@ WP2SHELL_DETECT_FILES_SHA256_TOOL=""
 WP2SHELL_DETECT_FILES_SIGNAL_COUNT=0
 WP2SHELL_DETECT_FILES_SIGNAL_LABELS=()
 WP2SHELL_DETECT_FILES_OVERSIZED=()
+WP2SHELL_DETECT_FILES_NAME_REASON=""
 WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
 WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
 WP2SHELL_DETECT_FILES_HIGH_REPORTED=0
@@ -37,6 +38,10 @@ declare -gA WP2SHELL_FILE_IOC_SHA256=()
 declare -gA WP2SHELL_FILE_IOC_PATTERN_CATEGORY=()
 declare -gA WP2SHELL_FILE_IOC_PATTERN_CONFIDENCE=()
 declare -gA WP2SHELL_DETECT_FILES_CLAMAV_HITS=()
+declare -gA WP2SHELL_DETECT_FILES_SHA1_CACHE=()
+declare -gA WP2SHELL_DETECT_FILES_SHA256_CACHE=()
+declare -gA WP2SHELL_DETECT_FILES_CONTENT_HITS=()
+WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE=0
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_OPEN_REST=()
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_OPEN_REST_EVIDENCE=()
 declare -gA WP2SHELL_DETECT_FILES_PLUGIN_EXEC_SINK=()
@@ -335,6 +340,36 @@ detect_files_size_profile_label() {
     return 1
 }
 
+detect_files_set_suspicious_name_reason() {
+    WP2SHELL_DETECT_FILES_NAME_REASON=""
+    local name=$1
+    local lower=${name,,}
+    case $lower in
+        cmsmap|cmsmap[-_.]*|*[-_.]cmsmap)
+            WP2SHELL_DETECT_FILES_NAME_REASON='CMSmap is een losstaande pentesttool en geen WordPress-plugin, een plugin of bestand met deze naam hoort hier niet'
+            return 0
+            ;;
+    esac
+    if [[ $lower =~ ^wp2shell[-_][0-9a-f]{6,}(\.[a-z0-9]+)?$ ]]; then
+        WP2SHELL_DETECT_FILES_NAME_REASON='de naam volgt het waargenomen sjabloon wp2shell met een hexadecimaal achtervoegsel'
+        return 0
+    fi
+    case $lower in
+        *wp2shell*)
+            WP2SHELL_DETECT_FILES_NAME_REASON='de naam bevat wp2shell, de aanduiding van deze campagne'
+            return 0
+            ;;
+        gg-*)
+            WP2SHELL_DETECT_FILES_NAME_REASON='de gg prefix is waargenomen bij plugins die via wp2shell zijn geplaatst'
+            return 0
+            ;;
+        temp-write-test-*)
+            WP2SHELL_DETECT_FILES_NAME_REASON='dit is een schrijftest, aanvallers gebruiken die om te controleren of een map beschrijfbaar is, maar WordPress zelf laat bij een afgebroken update ook zulke bestanden achter'
+            return 0
+            ;;
+    esac
+    return 1
+}
 detect_files_suspicious_name_reason() {
     local name=$1
     local lower=${name,,}
@@ -607,16 +642,142 @@ detect_files_note_location_signals() {
     return 0
 }
 
+detect_files_extract_paths() {
+    local listing=$1 destination=$2
+    : > "$destination"
+    if [ ! -s "$listing" ]; then
+        return 0
+    fi
+    awk 'BEGIN { RS = "\0"; ORS = "\0" } NR % 2 == 0 { print }' "$listing" > "$destination" 2>/dev/null || return 1
+    return 0
+}
+
+detect_files_fill_hash_cache_from() {
+    local paths=$1 tool=$2 target=$3
+    local entry digest path
+    while IFS= read -r -d '' entry; do
+        if [ -z "$entry" ]; then
+            continue
+        fi
+        digest=${entry%% *}
+        digest=${digest#\\}
+        path=${entry#*  }
+        if [ -z "$digest" ] || [ -z "$path" ]; then
+            continue
+        fi
+        if [ "$target" = "sha1" ]; then
+            WP2SHELL_DETECT_FILES_SHA1_CACHE["$path"]=${digest,,}
+        else
+            WP2SHELL_DETECT_FILES_SHA256_CACHE["$path"]=${digest,,}
+        fi
+    done < <(xargs -0 -r "$tool" -z -- < "$paths" 2>/dev/null)
+    return 0
+}
+
+detect_files_populate_hash_cache() {
+    local paths=$1
+    WP2SHELL_DETECT_FILES_SHA1_CACHE=()
+    WP2SHELL_DETECT_FILES_SHA256_CACHE=()
+    if [ ! -s "$paths" ]; then
+        return 0
+    fi
+    detect_files_fill_hash_cache_from "$paths" sha1sum sha1
+    if [ "${#WP2SHELL_FILE_IOC_SHA256[@]}" -gt 0 ]; then
+        detect_files_fill_hash_cache_from "$paths" sha256sum sha256
+    fi
+    log_debug "Hashcache gevuld: ${#WP2SHELL_DETECT_FILES_SHA1_CACHE[@]} sha1, ${#WP2SHELL_DETECT_FILES_SHA256_CACHE[@]} sha256"
+    return 0
+}
+
+detect_files_collect_prefilter_hits() {
+    local paths=$1 result=$2
+    shift 2
+    local errors status=0
+    errors=$(mktemp -t wp2shell-prefilter-err.XXXXXXXX) || return 1
+    register_temp_cleanup "$errors"
+    xargs -0 -r "$@" -- < "$paths" > "$result" 2>"$errors" || status=$?
+    if [ -s "$errors" ]; then
+        log_warn "De voorselectie meldde een fout: $(head -c 200 -- "$errors")"
+        return 1
+    fi
+    case $status in
+        0|1|123) ;;
+        *)
+            log_warn "De voorselectie eindigde met exitcode $status"
+            return 1
+            ;;
+    esac
+    local hit
+    while IFS= read -r -d '' hit; do
+        if [ -n "$hit" ]; then
+            WP2SHELL_DETECT_FILES_CONTENT_HITS["$hit"]=1
+        fi
+    done < "$result"
+    return 0
+}
+
+detect_files_populate_content_prefilter() {
+    local paths=$1
+    WP2SHELL_DETECT_FILES_CONTENT_HITS=()
+    WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE=0
+    if [ ! -s "$paths" ]; then
+        return 0
+    fi
+    if declare -F detect_regex_load_patterns_once >/dev/null 2>&1; then
+        detect_regex_load_patterns_once || true
+    fi
+    local result literal_ok=1 regex_ok=1
+    result=$(mktemp -t wp2shell-prefilter.XXXXXXXX) || return 0
+    register_temp_cleanup "$result"
+    if [ -n "$WP2SHELL_FILE_IOC_PATTERN_FILE" ] && [ -s "$WP2SHELL_FILE_IOC_PATTERN_FILE" ]; then
+        detect_files_collect_prefilter_hits "$paths" "$result" \
+            "${WP2SHELL_GREP:-grep}" -I -l -Z -i -F -f "$WP2SHELL_FILE_IOC_PATTERN_FILE" || literal_ok=0
+    else
+        literal_ok=0
+    fi
+    if [ -n "${WP2SHELL_REGEX_GATE_FILE:-}" ] && [ -s "${WP2SHELL_REGEX_GATE_FILE}" ]; then
+        detect_files_collect_prefilter_hits "$paths" "$result" \
+            "${WP2SHELL_GREP:-grep}" -I -l -Z -i -E -f "$WP2SHELL_REGEX_GATE_FILE" || regex_ok=0
+    elif declare -F detect_regex_scan_file >/dev/null 2>&1; then
+        regex_ok=0
+    fi
+    if [ "$literal_ok" != "1" ] || [ "$regex_ok" != "1" ]; then
+        log_warn "Voorselectie op inhoud is niet volledig gelukt, elk bestand wordt afzonderlijk gecontroleerd"
+        WP2SHELL_DETECT_FILES_CONTENT_HITS=()
+        return 0
+    fi
+    WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE=1
+    log_debug "Voorselectie op inhoud: ${#WP2SHELL_DETECT_FILES_CONTENT_HITS[@]} bestanden met een mogelijke treffer"
+    return 0
+}
+
+detect_files_content_is_interesting() {
+    local candidate=$1
+    if [ "$WP2SHELL_DETECT_FILES_PREFILTER_ACTIVE" != "1" ]; then
+        return 0
+    fi
+    if [ -n "${WP2SHELL_DETECT_FILES_CONTENT_HITS[$candidate]:-}" ]; then
+        return 0
+    fi
+    return 1
+}
+
 detect_files_compute_hashes() {
     local candidate=$1
-    WP2SHELL_DETECT_FILES_CURRENT_SHA1=$(file_sha1 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
+    WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_SHA1_CACHE[$candidate]:-}
+    if [ -z "$WP2SHELL_DETECT_FILES_CURRENT_SHA1" ]; then
+        WP2SHELL_DETECT_FILES_CURRENT_SHA1=$(file_sha1 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
+    fi
     WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_CURRENT_SHA1,,}
     WP2SHELL_DETECT_FILES_CURRENT_SHA1=${WP2SHELL_DETECT_FILES_CURRENT_SHA1#\\}
     if [ "${#WP2SHELL_DETECT_FILES_CURRENT_SHA1}" -ne 40 ]; then
         WP2SHELL_DETECT_FILES_CURRENT_SHA1=""
     fi
     if [ "${#WP2SHELL_FILE_IOC_SHA256[@]}" -gt 0 ]; then
-        WP2SHELL_DETECT_FILES_CURRENT_SHA256=$(file_sha256 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
+        WP2SHELL_DETECT_FILES_CURRENT_SHA256=${WP2SHELL_DETECT_FILES_SHA256_CACHE[$candidate]:-}
+        if [ -z "$WP2SHELL_DETECT_FILES_CURRENT_SHA256" ]; then
+            WP2SHELL_DETECT_FILES_CURRENT_SHA256=$(file_sha256 "$candidate") || WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
+        fi
         WP2SHELL_DETECT_FILES_CURRENT_SHA256=${WP2SHELL_DETECT_FILES_CURRENT_SHA256,,}
         if [ "${#WP2SHELL_DETECT_FILES_CURRENT_SHA256}" -ne 64 ]; then
             WP2SHELL_DETECT_FILES_CURRENT_SHA256=""
@@ -770,9 +931,10 @@ detect_files_report_suspicious_name() {
     local site_path=$1 relative=$2 candidate=$3 size=$4
     local base=${candidate##*/}
     local reason=''
-    if ! reason=$(detect_files_suspicious_name_reason "$base"); then
+    if ! detect_files_set_suspicious_name_reason "$base"; then
         return 0
     fi
+    reason="$WP2SHELL_DETECT_FILES_NAME_REASON"
     detect_files_note_signal "verdachte bestandsnaam"
     local size_note=''
     if size_note=$(detect_files_size_profile_label "$size"); then
@@ -1209,11 +1371,12 @@ detect_files_evaluate_file() {
     detect_files_report_mu_plugin_file "$site_path" "$relative" "$candidate"
     detect_files_report_php_in_writable_directory "$site_path" "$relative" "$candidate" "$size"
     detect_files_report_suspicious_name "$site_path" "$relative" "$candidate" "$size"
-    if [ "$scannable" = "1" ]; then
+    if [ "$scannable" = "1" ] && detect_files_content_is_interesting "$candidate"; then
         detect_files_scan_file_content "$site_path" "$relative" "$candidate" "$size" || return 1
     fi
     detect_files_report_configuration_file "$site_path" "$relative" "$candidate" "$size"
-    if detect_files_is_php_candidate "$base" && declare -F detect_regex_scan_file >/dev/null 2>&1; then
+    if detect_files_is_php_candidate "$base" && declare -F detect_regex_scan_file >/dev/null 2>&1 &&
+        detect_files_content_is_interesting "$candidate"; then
         detect_regex_scan_file "$site_path" "$candidate" "$size" || true
     fi
     return 0
@@ -1344,6 +1507,16 @@ detect_files_for_site() {
     fi
     detect_files_run_clamav_corroboration "$listing" "$owner_user" || \
         log_warn "ClamAV-controle kon niet uitgevoerd worden voor $site_path"
+    local paths_listing
+    paths_listing=$(mktemp -t wp2shell-paths.XXXXXXXX) || paths_listing=""
+    if [ -n "$paths_listing" ]; then
+        register_temp_cleanup "$paths_listing"
+        detect_files_extract_paths "$listing" "$paths_listing"
+        detect_files_populate_hash_cache "$paths_listing"
+        detect_files_populate_content_prefilter "$paths_listing"
+    else
+        log_warn "Kan geen padlijst maken, batchverwerking wordt overgeslagen"
+    fi
     detect_files_evaluate_candidates "$site_path" "$listing"
     detect_files_report_oversized_files "$site_path"
     detect_files_report_plugin_structures "$site_path"

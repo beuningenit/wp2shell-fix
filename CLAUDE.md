@@ -38,6 +38,8 @@ commandoregel in `tools/lint.sh`, met deze motivering:
 - `SC2029`: `deploy.sh` expandeert bewust aan de clientkant, want het doelpad is een lokale
   variabele die voor verzending ingevuld moet worden. De invoer wordt eerst gevalideerd op
   shell-metatekens.
+- `SC2030` en `SC2031`: bij parallelle verwerking krijgt elke worker bewust een eigen
+  findings-bestand in zijn subshell, terwijl de ouder het zijne houdt om na afloop samen te voegen.
 - `SC2329`: handlerfuncties worden indirect aangeroepen via een variabele, zodat elk subcommando
   dezelfde per-site isolatie gebruikt.
 - `SC2254`: allowlist-entries zijn bewust globs, geen letterlijke strings. `*@beuningenit.nl` en
