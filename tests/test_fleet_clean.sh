@@ -26,6 +26,8 @@ WP_STUB="$FIXTURE/wp-stub"
     printf 'args=("$@")\n'
     printf 'case " ${args[*]} " in\n'
     printf '    *" is-installed "*) exit 0 ;;\n'
+    printf '    *" db prefix "*) printf %swp_\\n%s; exit 0 ;;\n' "'" "'"
+    printf '    *" db query "*) exit 0 ;;\n'
     printf '    *" db export - "*) printf -- %s-- dump\\nCREATE TABLE wp_posts (id int);\\n%s; exit 0 ;;\n' "'" "'"
     printf '    *" core version "*) printf %s7.0.3\\n%s; exit 0 ;;\n' "'" "'"
     printf '    *" verify-checksums "*) printf %sSuccess: WordPress installation verifies against checksums.\\n%s; exit 0 ;;\n' "'" "'"
@@ -130,6 +132,8 @@ expect_equal "elke site is na het opschonen geverifieerd" "4" \
     "$(count_in_report 'cleanup-verified')"
 expect_equal "geen enkele site blijft als onvolledig achter" "0" \
     "$(count_in_report '"category":"cleanup-incomplete"')"
+expect_equal "geen enkele site blijft ongeverifieerd" "0" \
+    "$(count_in_report '"category":"cleanup-unverified"')"
 
 expect_equal "het rapport is geldige JSON" "geldig" \
     "$(php -r '$d=json_decode(file_get_contents($argv[1]),true); echo $d===null?"ongeldig":"geldig";' "$REPORT_DIR/report.json")"

@@ -162,6 +162,38 @@ printf '{"category":"log-missing","confidence":"high-confidence"}\n' > "$BLIND_F
 expect_equal "zonder blinde vlekken is de lijst leeg" "" \
     "$(collect_verification_blind_spots "$BLIND_FIXTURE")"
 
+COMPLETE_FIXTURE="$FIXTURE/scope.ndjson"
+printf '{"category":"wp-scan-scope","confidence":"high-confidence"}\n' > "$COMPLETE_FIXTURE"
+
+expect_equal "volledig bewijs levert geen probleem op" "" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 0)"
+
+expect_equal "een gestopte detector blokkeert het schoon-oordeel" "een van de controles is voortijdig gestopt" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 1)"
+
+expect_equal "zonder afrondingsbewijs is de controle onvolledig" \
+    "de WordPress-controles hebben geen afronding gemeld" \
+    "$(printf '{"category":"log-missing","confidence":"info"}\n' > "$FIXTURE/noscope.ndjson"; verification_completeness_problems "$FIXTURE/noscope.ndjson" 0)"
+
+SAVED_CORE=${WP2SHELL_SCAN_CORE_CHECKSUMS:-1}
+WP2SHELL_SCAN_CORE_CHECKSUMS=0
+expect_equal "uitgezette core-integriteitscontrole blokkeert het schoon-oordeel" \
+    "de core-integriteitscontrole staat uit in de configuratie" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 0)"
+WP2SHELL_SCAN_CORE_CHECKSUMS=$SAVED_CORE
+
+SAVED_PLUGIN=${WP2SHELL_SCAN_PLUGIN_CHECKSUMS:-1}
+WP2SHELL_SCAN_PLUGIN_CHECKSUMS=0
+expect_equal "uitgezette plugin-integriteitscontrole blokkeert het schoon-oordeel" \
+    "de plugin-integriteitscontrole staat uit in de configuratie" \
+    "$(verification_completeness_problems "$COMPLETE_FIXTURE" 0)"
+WP2SHELL_SCAN_PLUGIN_CHECKSUMS=$SAVED_PLUGIN
+
+expect_equal "een onbekende tabelprefix blokkeert het schoon-oordeel" "ja" \
+    "$(category_indicates_blind_spot "db-prefix-unknown" && printf 'ja' || printf 'nee')"
+expect_equal "een mislukte autoload-query blokkeert het schoon-oordeel" "ja" \
+    "$(category_indicates_blind_spot "db-autoload-query-failed" && printf 'ja' || printf 'nee')"
+
 printf '\n%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1

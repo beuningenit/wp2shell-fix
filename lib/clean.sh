@@ -354,15 +354,59 @@ clean_injected_configuration() {
 rerun_detection_into() {
     local site_path=$1 owner_user=$2 domain=$3 destination=$4
     local previous_findings=${WP2SHELL_FINDINGS_FILE:-}
+    local failures=0 status
     : > "$destination"
     WP2SHELL_FINDINGS_FILE="$destination"
     if declare -F detect_files_for_site >/dev/null 2>&1; then
-        detect_files_for_site "$site_path" "$owner_user" >/dev/null 2>&1 || true
+        status=0
+        detect_files_for_site "$site_path" "$owner_user" >/dev/null 2>&1 || status=$?
+        if [ "$status" -ne 0 ]; then
+            log_error "De bestandscontrole is voortijdig gestopt met exitcode $status"
+            failures=$((failures + 1))
+        fi
+    else
+        log_error "De bestandscontrole is niet geladen"
+        failures=$((failures + 1))
     fi
     if declare -F detect_wp_for_site >/dev/null 2>&1; then
-        detect_wp_for_site "$site_path" "$owner_user" "$domain" >/dev/null 2>&1 || true
+        status=0
+        detect_wp_for_site "$site_path" "$owner_user" "$domain" >/dev/null 2>&1 || status=$?
+        if [ "$status" -ne 0 ]; then
+            log_error "De WordPress-controle is voortijdig gestopt met exitcode $status"
+            failures=$((failures + 1))
+        fi
+    else
+        log_error "De WordPress-controle is niet geladen"
+        failures=$((failures + 1))
     fi
     WP2SHELL_FINDINGS_FILE="$previous_findings"
+    if [ "$failures" -gt 0 ]; then
+        return 1
+    fi
+    return 0
+}
+
+verification_completeness_problems() {
+    local recheck=$1 detection_status=$2
+    local problems=''
+    if [ "$detection_status" -ne 0 ]; then
+        problems="$problems, een van de controles is voortijdig gestopt"
+    fi
+    if [ "${WP2SHELL_SCAN_CORE_CHECKSUMS:-1}" != "1" ]; then
+        problems="$problems, de core-integriteitscontrole staat uit in de configuratie"
+    fi
+    if [ "${WP2SHELL_SCAN_PLUGIN_CHECKSUMS:-1}" != "1" ]; then
+        problems="$problems, de plugin-integriteitscontrole staat uit in de configuratie"
+    fi
+    if ! "${WP2SHELL_GREP:-grep}" -q '"category":"wp-scan-scope"' -- "$recheck" 2>/dev/null; then
+        problems="$problems, de WordPress-controles hebben geen afronding gemeld"
+    fi
+    local blind_spots
+    blind_spots=$(collect_verification_blind_spots "$recheck")
+    if [ -n "$blind_spots" ]; then
+        problems="$problems, overgeslagen controles: $blind_spots"
+    fi
+    printf '%s' "${problems#, }"
     return 0
 }
 
@@ -402,6 +446,13 @@ WP2SHELL_VERIFICATION_BLIND_CATEGORIES=(
     "plugin-checksums-unavailable"
     "plugin-checksums-error"
     "db-query-unavailable"
+    "db-prefix-unknown"
+    "db-autoload-query-failed"
+    "db-bridge-posts-query-failed"
+    "db-active-plugins-unavailable"
+    "db-siteurl-unverified"
+    "cron-list-unavailable"
+    "wp-config-unreadable"
     "admin-list-unavailable"
     "admin-list-unparsable"
     "ioc-data-missing"
@@ -474,21 +525,22 @@ verify_site_after_clean() {
     recheck=$(mktemp -t wp2shell-verify.XXXXXXXX) || return 1
     register_temp_cleanup "$recheck"
     log_info "Controle na het opschonen van $site_path"
-    rerun_detection_into "$site_path" "$owner_user" "$domain" "$recheck"
+    local detection_status=0
+    rerun_detection_into "$site_path" "$owner_user" "$domain" "$recheck" || detection_status=$?
     remaining=$(count_actionable_findings_in "$recheck")
-    local blind_spots
-    blind_spots=$(collect_verification_blind_spots "$recheck")
-    if [ "$remaining" = "0" ] && [ -n "$blind_spots" ]; then
+    local completeness_problems
+    completeness_problems=$(verification_completeness_problems "$recheck" "$detection_status")
+    if [ "$remaining" = "0" ] && [ -n "$completeness_problems" ]; then
         record_finding \
             "site=$site_path" \
             "severity=$SEVERITY_HIGH" \
             "confidence=$CONFIDENCE_HIGH" \
             "category=cleanup-unverified" \
             "title=Deze installatie kon na het opschonen niet volledig gecontroleerd worden" \
-            "detail=De controle na het opschonen vond geen resterende besmetting, maar een deel van de controles kon niet draaien: $blind_spots. Daardoor is de core-integriteit, de database of de beheerderslijst niet nagekeken. Deze site telt daarom niet als aantoonbaar schoon, want de belangrijkste manier om een achtergebleven injectie te vinden is juist die controle." \
-            "evidence=$blind_spots" \
-            "remediation=Zorg dat WP-CLI de site kan benaderen en de database bereikbaar is, en draai daarna opnieuw clean of scan op deze installatie."
-        log_error "Controle onvolledig op $site_path, niet uitgevoerde controles: $blind_spots"
+            "detail=De controle na het opschonen vond geen resterende besmetting, maar leverde ook geen bewijs dat er volledig gekeken is. Wat er ontbrak: $completeness_problems. Daardoor kan een gewijzigd corebestand, een aanpassing in de database of een achtergebleven beheerdersaccount onopgemerkt zijn gebleven. Deze site telt niet als aantoonbaar schoon, want niets vinden omdat er niet gekeken is, is geen schone site." \
+            "evidence=$completeness_problems" \
+            "remediation=Zorg dat WP-CLI de site kan benaderen, dat de database bereikbaar is en dat de integriteitscontroles aan staan in de configuratie, en draai daarna opnieuw clean of scan op deze installatie."
+        log_error "Controle onvolledig op $site_path: $completeness_problems"
         return 1
     fi
     if [ "$remaining" = "0" ]; then
