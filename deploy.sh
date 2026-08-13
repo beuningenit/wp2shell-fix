@@ -99,17 +99,34 @@ run_remote() {
     ssh "${SSH_OPTIONS[@]}" "$SSH_TARGET" "$@"
 }
 
-log "Toolkit inpakken"
+PACKAGE_CONTENTS=(wp2shell.sh lib config tools tests README.md CLAUDE.md)
+
+MISSING_PATHS=()
+for entry in "${PACKAGE_CONTENTS[@]}"; do
+    if [ ! -e "$REPO_ROOT/$entry" ]; then
+        MISSING_PATHS+=("$entry")
+    fi
+done
+if [ "${#MISSING_PATHS[@]}" -gt 0 ]; then
+    printf 'FOUT: in %s ontbreken: %s\n' "$REPO_ROOT" "${MISSING_PATHS[*]}" >&2
+    printf 'deploy.sh pakt de toolkit in vanuit de map waarin het script zelf staat.\n' >&2
+    printf 'Zet de hele repository op deze server neer en draai deploy.sh vanuit die map,\n' >&2
+    printf 'bijvoorbeeld met: git clone git@github.com:BeuningenIT/wp2shell-fix.git\n' >&2
+    exit 1
+fi
+
+log "Toolkit inpakken vanuit $REPO_ROOT"
 PACKAGE=$(mktemp -t wp2shell-deploy.XXXXXXXX.tar.gz)
 trap 'rm -f -- "$PACKAGE"' EXIT
 
-tar --create --gzip --file="$PACKAGE" \
+if ! tar --create --gzip --file="$PACKAGE" \
     --directory="$REPO_ROOT" \
     --exclude='.git' \
     --exclude='reports/*' \
     --exclude='*.tar.gz' \
-    wp2shell.sh lib config tools tests README.md CLAUDE.md 2>/dev/null \
-    || fail "Inpakken is mislukt"
+    -- "${PACKAGE_CONTENTS[@]}"; then
+    fail "Inpakken is mislukt, zie de melding van tar hierboven"
+fi
 
 log "Verbinding controleren met $SSH_TARGET"
 if [ "$DRY_RUN" != "1" ]; then
