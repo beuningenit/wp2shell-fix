@@ -471,6 +471,50 @@ uitgezet_status=0
 ) || uitgezet_status=$?
 expect_equal "met de controle bewust uitgezet loopt het door" "0" "$uitgezet_status"
 
+GZIP_ROOT="$WORKROOT/gzip-stuk"
+mkdir -p "$GZIP_ROOT/20260813-120000-1"
+printf '{"tool":"wp2shell"}\n' > "$GZIP_ROOT/20260813-120000-1/.wp2shell-run"
+schrijf_herstelpunt "$GZIP_ROOT/20260813-120000-1/site1"
+GZIP_CONF="$WORKROOT/gzip.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GZIP_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GZIP_CONF"
+GZIP_SHIM="$WORKROOT/gzip-shim"
+mkdir -p "$GZIP_SHIM"
+printf '#!/bin/bash\nexit 127\n' > "$GZIP_SHIM/gzip"
+chmod 0755 -- "$GZIP_SHIM/gzip"
+gzip_status=0
+PATH="$GZIP_SHIM:$PATH" WP2SHELL_CONFIG_FILE="$GZIP_CONF" \
+    "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || gzip_status=$?
+expect_equal "een gzip die niet werkt stopt het opruimen" "2" "$gzip_status"
+expect_equal "het herstelpunt is niet verwijderd" "aanwezig" \
+    "$([ -f "$GZIP_ROOT/20260813-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+KRAP_STATE="$WORKROOT/krapte"
+mkdir -p "$KRAP_STATE" "$WORKROOT/andere-worker"
+krapte_status=0
+(
+    WP2SHELL_STATE_DIR="$KRAP_STATE"
+    backup_reset_reservations
+    beschikbaar=$(backup_available_kilobytes "$WORKROOT")
+    printf '%s %s\n' "$((beschikbaar - 10))" "$WORKROOT/andere-worker" > "$(backup_reservation_file)"
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1
+) || krapte_status=$?
+expect_equal "krapte door gelijktijdige backups slaat de site over" "1" "$krapte_status"
+tests_run=$((tests_run + 1))
+if grep -q '"category":"backup-space-insufficient"' "$WP2SHELL_FINDINGS_FILE"; then
+    printf 'ok   krapte wordt als ruimtegebrek gemeld en niet als grootboekprobleem\n'
+else
+    printf 'FAIL krapte wordt verkeerd gerapporteerd\n' >&2
+    tests_failed=$((tests_failed + 1))
+fi
+tests_run=$((tests_run + 1))
+if grep -q '"category":"backup-reservation-unavailable"' "$WP2SHELL_FINDINGS_FILE"; then
+    printf 'FAIL krapte wordt ten onrechte als grootboekprobleem gemeld\n' >&2
+    tests_failed=$((tests_failed + 1))
+else
+    printf 'ok   er wordt niet ten onrechte naar de state-map verwezen\n'
+fi
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1

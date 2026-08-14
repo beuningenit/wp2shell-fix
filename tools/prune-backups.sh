@@ -77,6 +77,15 @@ if [ ! -d "$BACKUP_ROOT" ]; then
     exit 1
 fi
 
+for benodigd in gzip du df find stat grep sed; do
+    if ! command -v "$benodigd" >/dev/null 2>&1; then
+        printf 'Het commando %s ontbreekt. Zonder dat commando is niet vast te stellen of\n' "$benodigd" >&2
+        printf 'een backup bruikbaar is, en dan zou elke backup als onbruikbaar gelden en\n' >&2
+        printf 'verwijderd worden. Er is niets verwijderd.\n' >&2
+        exit 2
+    fi
+done
+
 backup_root_is_trustworthy() {
     local root=$1 resolved entry base depth
     resolved=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
@@ -255,7 +264,14 @@ manifest_is_complete() {
     if ! grep -q -m1 -i 'CREATE TABLE' -- "$dump" 2>/dev/null; then
         return 1
     fi
-    if ! gzip -t -- "$archive" 2>/dev/null; then
+    local gzip_status=0
+    gzip -t -- "$archive" 2>/dev/null || gzip_status=$?
+    if [ "$gzip_status" -ge 126 ]; then
+        printf 'gzip kon niet uitgevoerd worden (exitcode %s). Zonder die controle is niet\n' "$gzip_status" >&2
+        printf 'vast te stellen of een backup bruikbaar is. Er is niets verwijderd.\n' >&2
+        exit 2
+    fi
+    if [ "$gzip_status" -ne 0 ]; then
         return 1
     fi
     return 0

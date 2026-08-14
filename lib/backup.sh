@@ -1,5 +1,6 @@
 WP2SHELL_BACKUP_LOADED=1
 WP2SHELL_BACKUP_RESERVED_DIRECTORY=""
+WP2SHELL_BACKUP_RESERVATION_SHORTFALL=0
 
 backup_root_for_run() {
     printf '%s/%s' "${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}" "${WP2SHELL_RUN_ID:-onbekend}"
@@ -321,7 +322,8 @@ backup_reserve_space() {
         flock -u 8
         exec 8>&-
         log_error "Onvoldoende ruimte na verrekening van gelijktijdige backups: $((free / 1024)) MB vrij, $((needed / 1024)) MB nodig"
-        return 1
+        WP2SHELL_BACKUP_RESERVATION_SHORTFALL=$free
+        return 2
     fi
     overig=$(backup_ledger_without_directory "$ledger" "$backup_dir")
     if ! { [ -n "$overig" ] && printf '%s\n' "$overig"; printf '%s %s\n' "$needed" "$backup_dir"; } > "$ledger" 2>/dev/null; then
@@ -413,8 +415,23 @@ backup_space_is_sufficient() {
     fi
     needed=$(((site_size + database_size) + ((site_size + database_size) * margin / 100)))
     if [ "$available" -ge "$needed" ]; then
-        if backup_reserve_space "$needed" "$backup_dir"; then
+        local reserve_status=0
+        backup_reserve_space "$needed" "$backup_dir" || reserve_status=$?
+        if [ "$reserve_status" -eq 0 ]; then
             return 0
+        fi
+        if [ "$reserve_status" -eq 2 ]; then
+            record_finding \
+                "site=$site_path" \
+                "severity=$SEVERITY_HIGH" \
+                "confidence=$CONFIDENCE_HIGH" \
+                "category=backup-space-insufficient" \
+                "title=Te weinig schijfruimte voor een backup" \
+                "detail=Op de schijf staat genoeg vrij, maar gelijktijdig lopende backups van andere sites hebben die ruimte al nodig. Deze site is overgeslagen en niet gewijzigd, zodat de schijf niet volloopt terwijl de andere backups nog schrijven." \
+                "evidence=nog vrij te vergeven $((${WP2SHELL_BACKUP_RESERVATION_SHORTFALL:-0} / 1024)) MB, nodig $((needed / 1024)) MB, ruw beschikbaar $((available / 1024)) MB" \
+                "remediation=Draai deze site opnieuw als de andere backups klaar zijn, verlaag --parallel, of wijs met --backup-dir een locatie met meer ruimte aan." \
+                "action=skipped"
+            return 1
         fi
         record_finding \
             "site=$site_path" \
