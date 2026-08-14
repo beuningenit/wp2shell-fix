@@ -162,6 +162,23 @@ remove_directory() {
     return 0
 }
 
+run_is_ours() {
+    local run_dir=$1 manifest
+    case $(basename -- "$run_dir") in
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
+        *) return 1 ;;
+    esac
+    if [ -f "$run_dir/.wp2shell-run" ] && grep -q '"tool":"wp2shell"' -- "$run_dir/.wp2shell-run" 2>/dev/null; then
+        return 0
+    fi
+    while IFS= read -r -d '' manifest; do
+        if grep -q '"files_archive_sha256"' -- "$manifest" 2>/dev/null; then
+            return 0
+        fi
+    done < <(find -P "$run_dir" -mindepth 2 -maxdepth 2 -name manifest.json -type f -print0 2>/dev/null)
+    return 1
+}
+
 run_has_recovery_point() {
     find -P "$1" -mindepth 2 -maxdepth 2 -name manifest.json -type f -print -quit 2>/dev/null | grep -q .
 }
@@ -173,7 +190,7 @@ while IFS= read -r line; do
     fi
 done < <(
     while IFS= read -r -d '' candidate; do
-        if run_has_recovery_point "$candidate"; then
+        if run_is_ours "$candidate" && run_has_recovery_point "$candidate"; then
             printf '%s %s\n' "$(stat -c '%Y' -- "$candidate" 2>/dev/null || printf '0')" "$candidate"
         fi
     done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null) \
@@ -190,15 +207,30 @@ while IFS= read -r -d '' site_dir; do
     remove_directory "$site_dir" "onvolledig" || true
 done < <(
     while IFS= read -r -d '' run_dir; do
-        case $(basename -- "$run_dir") in
-            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
-            *) continue ;;
-        esac
+        if ! run_is_ours "$run_dir"; then
+            continue
+        fi
         find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null
     done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 )
 if [ "$found_incomplete" = "0" ]; then
     printf '   geen\n'
+fi
+
+unproven=0
+while IFS= read -r -d '' run_dir; do
+    if run_is_ours "$run_dir"; then
+        continue
+    fi
+    if [ "$unproven" = "0" ]; then
+        printf '\nOvergeslagen, geen bewijs dat deze mappen van wp2shell zijn:\n'
+    fi
+    unproven=1
+    printf '%-12s %6s MB  %s\n' "onbewezen" "$(($(directory_size_kilobytes "$run_dir") / 1024))" "$run_dir"
+done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+if [ "$unproven" = "1" ]; then
+    printf 'Deze mappen zijn met rust gelaten. Backups van voor deze versie dragen nog\n'
+    printf 'geen markering; ruim die desgewenst handmatig op.\n'
 fi
 
 printf '\nVolledige backups, de %s nieuwste runs met een herstelpunt blijven staan:\n' "$KEEP"

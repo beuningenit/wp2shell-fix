@@ -26,12 +26,44 @@ backup_location_is_safe() {
     return 0
 }
 
+backup_run_marker_name() {
+    printf '.wp2shell-run'
+    return 0
+}
+
+write_backup_run_marker() {
+    local run_root=$1 marker
+    marker="$run_root/$(backup_run_marker_name)"
+    if [ -f "$marker" ]; then
+        return 0
+    fi
+    {
+        printf '{'
+        printf '"tool":"wp2shell",'
+        printf '"run_id":%s,' "$(json_string "${WP2SHELL_RUN_ID:-}")"
+        printf '"created_at":%s' "$(json_string "$(timestamp_iso)")"
+        printf '}\n'
+    } > "$marker" 2>/dev/null || true
+    chmod 0600 -- "$marker" 2>/dev/null || true
+    return 0
+}
+
+backup_reset_reservations() {
+    local ledger
+    ledger=$(backup_reservation_file)
+    mkdir -p -- "$(dirname -- "$ledger")" 2>/dev/null || true
+    printf '0\n' > "$ledger" 2>/dev/null || true
+    WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
+    return 0
+}
+
 prepare_backup_directory() {
     local backup_dir=$1
     if ! mkdir -p -- "$backup_dir"; then
         log_error "Kan backupmap niet aanmaken: $backup_dir"
         return 1
     fi
+    write_backup_run_marker "$(backup_root_for_run)"
     chmod 0700 -- "$backup_dir" 2>/dev/null || true
     return 0
 }

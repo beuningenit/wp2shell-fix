@@ -96,6 +96,9 @@ for run in 20260812-120000-1 20260813-120000-2; do
     done
 done
 printf '{}\n' > "$PRUNE_ROOT/20260812-120000-1/aaa/manifest.json"
+for run in 20260812-120000-1 20260813-120000-2; do
+    printf '{"tool":"wp2shell"}\n' > "$PRUNE_ROOT/$run/.wp2shell-run"
+done
 
 CONF="$WORKROOT/prune.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$PRUNE_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$CONF"
@@ -115,6 +118,8 @@ mkdir -p "$ORDER_ROOT/20260801-120000-1/site1" "$ORDER_ROOT/20260801-120000-1/si
 printf '{}\n' > "$ORDER_ROOT/20260801-120000-1/site1/manifest.json"
 printf '{}\n' > "$ORDER_ROOT/20260813-120000-2/site1/manifest.json"
 head -c 1000 /dev/zero > "$ORDER_ROOT/20260801-120000-1/site-onvolledig/files.tar.gz"
+printf '{"tool":"wp2shell"}\n' > "$ORDER_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$ORDER_ROOT/20260813-120000-2/.wp2shell-run"
 touch -d '2026-08-01' "$ORDER_ROOT/20260801-120000-1"
 touch -d '2026-08-13' "$ORDER_ROOT/20260813-120000-2"
 ORDER_CONF="$WORKROOT/volgorde.conf"
@@ -128,6 +133,8 @@ expect_equal "de oudere run wordt wel opgeruimd" "weg" \
 DRY_ROOT="$WORKROOT/droog"
 mkdir -p "$DRY_ROOT/20260813-120000-9" "$DRY_ROOT/20260813-120000-1/site1"
 printf '{}\n' > "$DRY_ROOT/20260813-120000-1/site1/manifest.json"
+printf '{"tool":"wp2shell"}\n' > "$DRY_ROOT/20260813-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$DRY_ROOT/20260813-120000-9/.wp2shell-run"
 DRY_CONF="$WORKROOT/droog.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$DRY_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$DRY_CONF"
 voor=$(find "$DRY_ROOT" | LC_ALL=C sort)
@@ -138,6 +145,7 @@ expect_equal "zonder --apply verandert er niets op de schijf, ook geen lege runm
 FAIL_ROOT="$WORKROOT/onverwijderbaar"
 mkdir -p "$FAIL_ROOT/20260813-120000-1/site-onvolledig"
 head -c 100 /dev/zero > "$FAIL_ROOT/20260813-120000-1/site-onvolledig/files.tar.gz"
+printf '{"tool":"wp2shell"}\n' > "$FAIL_ROOT/20260813-120000-1/.wp2shell-run"
 FAIL_CONF="$WORKROOT/onverwijderbaar.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$FAIL_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$FAIL_CONF"
 SHIM_DIR="$WORKROOT/shim"
@@ -180,6 +188,7 @@ expect_equal "de vreemde inhoud is onaangeroerd" "aanwezig" \
 MARKER_ROOT="$WORKROOT/gedeelde-backupmap"
 mkdir -p "$MARKER_ROOT/20260813-120000-1/site1" "$MARKER_ROOT/backup-van-iemand-anders"
 printf '{}\n' > "$MARKER_ROOT/20260813-120000-1/site1/manifest.json"
+printf '{"tool":"wp2shell"}\n' > "$MARKER_ROOT/20260813-120000-1/.wp2shell-run"
 printf 'kostbaar\n' > "$MARKER_ROOT/backup-van-iemand-anders/data.sql"
 printf 'markering\n' > "$MARKER_ROOT/.wp2shell-backupboom"
 MARKER_CONF="$WORKROOT/gedeeld.conf"
@@ -194,6 +203,7 @@ expect_equal "de backup van een ander is onaangeroerd" "aanwezig" \
 LOCK_ROOT="$WORKROOT/vergrendeld"
 mkdir -p "$LOCK_ROOT/20260813-120000-1/site-onvolledig"
 head -c 100 /dev/zero > "$LOCK_ROOT/20260813-120000-1/site-onvolledig/files.tar.gz"
+printf '{"tool":"wp2shell"}\n' > "$LOCK_ROOT/20260813-120000-1/.wp2shell-run"
 LOCK_CONF="$WORKROOT/vergrendeld.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$LOCK_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$LOCK_CONF"
 LOCK_FILE="$WORKROOT/actieve-run.lock"
@@ -238,6 +248,39 @@ expect_equal "de eerste worker krijgt zijn ruimte gereserveerd" "0" "$eerste"
 expect_equal "de tweede worker wordt geweigerd omdat de ruimte al vergeven is" "1" "$tweede"
 expect_equal "na vrijgave staat het grootboek weer op nul" "0" \
     "$(cat "$RESERVE_STATE/na-vrijgave")"
+
+BEWIJS_ROOT="$WORKROOT/herkomst"
+mkdir -p "$BEWIJS_ROOT/20260813-120000-vreemd/klantdata" "$BEWIJS_ROOT/20260813-120000-1/site1"
+printf 'kostbaar\n' > "$BEWIJS_ROOT/20260813-120000-vreemd/klantdata/data.sql"
+printf '{"tool":"wp2shell","run_id":"x"}\n' > "$BEWIJS_ROOT/20260813-120000-1/.wp2shell-run"
+head -c 1000 /dev/zero > "$BEWIJS_ROOT/20260813-120000-1/site1/files.tar.gz"
+BEWIJS_CONF="$WORKROOT/herkomst.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$BEWIJS_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$BEWIJS_CONF"
+WP2SHELL_CONFIG_FILE="$BEWIJS_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een runmap zonder herkomstbewijs blijft onaangeroerd" "aanwezig" \
+    "$([ -f "$BEWIJS_ROOT/20260813-120000-vreemd/klantdata/data.sql" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "een runmap met markering wordt wel opgeruimd" "weg" \
+    "$([ -d "$BEWIJS_ROOT/20260813-120000-1/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+MARKERING_ROOT="$WORKROOT/markering"
+(
+    WP2SHELL_BACKUP_DIR="$MARKERING_ROOT"
+    WP2SHELL_RUN_ID=20260814-090000-77
+    prepare_backup_directory "$(backup_directory_for_site "$SITE")" >/dev/null 2>&1
+)
+expect_equal "de backup-engine legt een runmarkering aan" "aanwezig" \
+    "$([ -f "$MARKERING_ROOT/20260814-090000-77/.wp2shell-run" ] && printf 'aanwezig' || printf 'weg')"
+
+STALE_STATE="$WORKROOT/blijfhangen"
+mkdir -p "$STALE_STATE"
+(
+    WP2SHELL_STATE_DIR="$STALE_STATE"
+    printf '999999999\n' > "$(backup_reservation_file)"
+    backup_reset_reservations
+    printf '%s\n' "$(cat "$(backup_reservation_file)")" > "$STALE_STATE/na-reset"
+)
+expect_equal "een blijven hangen reservering wordt bij een nieuwe run gewist" "0" \
+    "$(cat "$STALE_STATE/na-reset")"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then

@@ -244,6 +244,7 @@ setup_run_environment() {
         die "$EXIT_INTERNAL" "Kan rapportmap niet aanmaken: $WP2SHELL_RUN_DIR"
     fi
     chmod 0750 -- "$WP2SHELL_RUN_DIR" 2>/dev/null || true
+    backup_reset_reservations
     WP2SHELL_RUN_LOG="$WP2SHELL_RUN_DIR/run.log"
     WP2SHELL_AUDIT_LOG="$WP2SHELL_RUN_DIR/audit.log"
     WP2SHELL_FINDINGS_FILE="$WP2SHELL_RUN_DIR/findings.ndjson"
