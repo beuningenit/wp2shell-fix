@@ -12,6 +12,7 @@ else
     exit 2
 fi
 
+BACKUP_ROOT_MARKER=.wp2shell-backupboom
 APPLY=0
 KEEP=${WP2SHELL_BACKUP_KEEP_RUNS:-3}
 BACKUP_ROOT=${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}
@@ -51,6 +52,48 @@ esac
 if [ ! -d "$BACKUP_ROOT" ]; then
     printf 'Backupmap %s bestaat niet\n' "$BACKUP_ROOT" >&2
     exit 1
+fi
+
+backup_root_is_trustworthy() {
+    local root=$1 resolved entry base depth
+    resolved=$(cd -- "$root" 2>/dev/null && pwd -P) || return 1
+    case $resolved in
+        /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/var)
+            printf 'Weigering: %s is een systeemmap en nooit een backupboom\n' "$resolved" >&2
+            return 1
+            ;;
+    esac
+    depth=${resolved//[!\/]/}
+    if [ "${#depth}" -lt 2 ]; then
+        printf 'Weigering: %s ligt te hoog in de boom voor een backupmap\n' "$resolved" >&2
+        return 1
+    fi
+    if [ -f "$resolved/$BACKUP_ROOT_MARKER" ]; then
+        return 0
+    fi
+    local seen=0
+    while IFS= read -r -d '' entry; do
+        seen=1
+        base=$(basename -- "$entry")
+        case $base in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
+            *)
+                printf 'Weigering: %s bevat %s, dat is geen runmap van deze toolkit\n' "$resolved" "$base" >&2
+                printf 'Een backupboom bevat uitsluitend mappen met een run-id.\n' >&2
+                return 1
+                ;;
+        esac
+    done < <(find -P "$resolved" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+    if [ "$seen" = "0" ]; then
+        printf 'Weigering: %s is leeg, er valt niets op te ruimen\n' "$resolved" >&2
+        return 1
+    fi
+    return 0
+}
+
+if ! backup_root_is_trustworthy "$BACKUP_ROOT"; then
+    printf 'Er is niets verwijderd.\n' >&2
+    exit 2
 fi
 
 printf 'Backupmap : %s\n' "$BACKUP_ROOT"

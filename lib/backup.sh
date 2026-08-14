@@ -31,6 +31,10 @@ prepare_backup_directory() {
         log_error "Kan backupmap niet aanmaken: $backup_dir"
         return 1
     fi
+    local root=${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}
+    if [ -d "$root" ] && [ ! -f "$root/.wp2shell-backupboom" ]; then
+        printf 'Deze map wordt beheerd door wp2shell en bevat backups per run.\n' > "$root/.wp2shell-backupboom" 2>/dev/null || true
+    fi
     chmod 0700 -- "$backup_dir" 2>/dev/null || true
     return 0
 }
@@ -156,10 +160,23 @@ discard_incomplete_backup() {
 
 backup_site_size_kilobytes() {
     local site_path=$1 size
-    size=$(du -sk --one-file-system -- "$site_path" 2>/dev/null | cut -f1) || size=0
+    size=$(du -sk -- "$site_path" 2>/dev/null | cut -f1) || size=0
     case $size in
         ''|*[!0-9]*) size=0 ;;
     esac
+    printf '%s' "$size"
+    return 0
+}
+
+backup_database_size_kilobytes() {
+    local site_path=$1 owner_user=$2 raw size
+    raw=$(wp_run "$owner_user" "$site_path" db size --size_format=b 2>/dev/null) || raw=''
+    raw=${raw%%$'\n'*}
+    raw=${raw//[[:space:]]/}
+    case $raw in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    size=$((raw / 1024))
     printf '%s' "$size"
     return 0
 }
@@ -175,19 +192,25 @@ backup_available_kilobytes() {
 }
 
 backup_space_is_sufficient() {
-    local site_path=$1 backup_dir=$2
+    local site_path=$1 backup_dir=$2 owner_user=${3:-}
     local margin=${WP2SHELL_BACKUP_FREE_MARGIN_PERCENT:-30}
     case $margin in
         ''|*[!0-9]*) margin=30 ;;
     esac
-    local needed available site_size
+    local needed available site_size database_size=0 database_known=0
     site_size=$(backup_site_size_kilobytes "$site_path")
     available=$(backup_available_kilobytes "$backup_dir")
     if [ "$site_size" -eq 0 ] || [ "$available" -eq 0 ]; then
         log_warn "Kon de vrije ruimte voor $backup_dir niet vaststellen, de backup gaat door zonder deze controle"
         return 0
     fi
-    needed=$((site_size + (site_size * margin / 100)))
+    if [ -n "$owner_user" ] && database_size=$(backup_database_size_kilobytes "$site_path" "$owner_user"); then
+        database_known=1
+    else
+        database_size=0
+        log_warn "Kon de omvang van de database voor $site_path niet vaststellen, de ruimtecontrole rekent alleen met de bestanden"
+    fi
+    needed=$(((site_size + database_size) + ((site_size + database_size) * margin / 100)))
     if [ "$available" -ge "$needed" ]; then
         return 0
     fi
@@ -199,7 +222,7 @@ backup_space_is_sufficient() {
         "category=backup-space-insufficient" \
         "title=Te weinig schijfruimte voor een backup" \
         "detail=De backup is niet gestart omdat er te weinig vrije ruimte is op de doelmap. De site is daardoor niet gewijzigd. Zonder deze controle zou de backup de schijf hebben volgeschreven, wat alle klanten op deze server raakt." \
-        "evidence=beschikbaar $((available / 1024)) MB, nodig $((needed / 1024)) MB inclusief een marge van $margin procent" \
+        "evidence=beschikbaar $((available / 1024)) MB, nodig $((needed / 1024)) MB inclusief een marge van $margin procent, bestanden $((site_size / 1024)) MB, database $((database_size / 1024)) MB$([ "$database_known" = "1" ] || printf ' (omvang onbekend, niet meegerekend)')" \
         "remediation=Ruim oude backups op met tools/prune-backups.sh of wijs met --backup-dir een locatie met meer ruimte aan." \
         "action=skipped"
     return 1
@@ -223,7 +246,7 @@ backup_site() {
     archive="$backup_dir/files.tar.gz"
     dump="$backup_dir/database.sql"
     manifest="$backup_dir/manifest.json"
-    if ! backup_space_is_sufficient "$site_path" "$backup_dir"; then
+    if ! backup_space_is_sufficient "$site_path" "$backup_dir" "$owner_user"; then
         discard_incomplete_backup "$backup_dir"
         return 1
     fi

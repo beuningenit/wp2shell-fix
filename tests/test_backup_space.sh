@@ -89,13 +89,13 @@ WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=30
 
 PRUNE_ROOT="$WORKROOT/prune"
 mkdir -p "$PRUNE_ROOT"
-for run in run-1 run-2; do
+for run in 20260812-120000-1 20260813-120000-2; do
     for site in aaa bbb; do
         mkdir -p "$PRUNE_ROOT/$run/$site"
         head -c 100000 /dev/zero > "$PRUNE_ROOT/$run/$site/files.tar.gz"
     done
 done
-printf '{}\n' > "$PRUNE_ROOT/run-1/aaa/manifest.json"
+printf '{}\n' > "$PRUNE_ROOT/20260812-120000-1/aaa/manifest.json"
 
 CONF="$WORKROOT/prune.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$PRUNE_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$CONF"
@@ -111,23 +111,23 @@ expect_equal "het herstelpunt zelf is bewaard" "1" \
     "$(find "$PRUNE_ROOT" -name manifest.json -type f | wc -l | tr -d ' ')"
 
 ORDER_ROOT="$WORKROOT/volgorde"
-mkdir -p "$ORDER_ROOT/run-oud/site1" "$ORDER_ROOT/run-oud/site-onvolledig" "$ORDER_ROOT/run-nieuw/site1"
-printf '{}\n' > "$ORDER_ROOT/run-oud/site1/manifest.json"
-printf '{}\n' > "$ORDER_ROOT/run-nieuw/site1/manifest.json"
-head -c 1000 /dev/zero > "$ORDER_ROOT/run-oud/site-onvolledig/files.tar.gz"
-touch -d '2026-08-01' "$ORDER_ROOT/run-oud"
-touch -d '2026-08-13' "$ORDER_ROOT/run-nieuw"
+mkdir -p "$ORDER_ROOT/20260801-120000-1/site1" "$ORDER_ROOT/20260801-120000-1/site-onvolledig" "$ORDER_ROOT/20260813-120000-2/site1"
+printf '{}\n' > "$ORDER_ROOT/20260801-120000-1/site1/manifest.json"
+printf '{}\n' > "$ORDER_ROOT/20260813-120000-2/site1/manifest.json"
+head -c 1000 /dev/zero > "$ORDER_ROOT/20260801-120000-1/site-onvolledig/files.tar.gz"
+touch -d '2026-08-01' "$ORDER_ROOT/20260801-120000-1"
+touch -d '2026-08-13' "$ORDER_ROOT/20260813-120000-2"
 ORDER_CONF="$WORKROOT/volgorde.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$ORDER_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$ORDER_CONF"
 WP2SHELL_CONFIG_FILE="$ORDER_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --keep 1 >/dev/null 2>&1
 expect_equal "de nieuwste run met een herstelpunt overleeft het opruimen" "aanwezig" \
-    "$([ -d "$ORDER_ROOT/run-nieuw" ] && printf 'aanwezig' || printf 'weg')"
+    "$([ -d "$ORDER_ROOT/20260813-120000-2" ] && printf 'aanwezig' || printf 'weg')"
 expect_equal "de oudere run wordt wel opgeruimd" "weg" \
-    "$([ -d "$ORDER_ROOT/run-oud" ] && printf 'aanwezig' || printf 'weg')"
+    "$([ -d "$ORDER_ROOT/20260801-120000-1" ] && printf 'aanwezig' || printf 'weg')"
 
 DRY_ROOT="$WORKROOT/droog"
-mkdir -p "$DRY_ROOT/lege-run" "$DRY_ROOT/run-1/site1"
-printf '{}\n' > "$DRY_ROOT/run-1/site1/manifest.json"
+mkdir -p "$DRY_ROOT/20260813-120000-9" "$DRY_ROOT/20260813-120000-1/site1"
+printf '{}\n' > "$DRY_ROOT/20260813-120000-1/site1/manifest.json"
 DRY_CONF="$WORKROOT/droog.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$DRY_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$DRY_CONF"
 voor=$(find "$DRY_ROOT" | LC_ALL=C sort)
@@ -136,15 +136,39 @@ na=$(find "$DRY_ROOT" | LC_ALL=C sort)
 expect_equal "zonder --apply verandert er niets op de schijf, ook geen lege runmap" "$voor" "$na"
 
 FAIL_ROOT="$WORKROOT/onverwijderbaar"
-mkdir -p "$FAIL_ROOT/run-x/site-onvolledig"
-head -c 100 /dev/zero > "$FAIL_ROOT/run-x/site-onvolledig/files.tar.gz"
-chmod 0555 "$FAIL_ROOT/run-x"
+mkdir -p "$FAIL_ROOT/20260813-120000-1/site-onvolledig"
+head -c 100 /dev/zero > "$FAIL_ROOT/20260813-120000-1/site-onvolledig/files.tar.gz"
 FAIL_CONF="$WORKROOT/onverwijderbaar.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$FAIL_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$FAIL_CONF"
+SHIM_DIR="$WORKROOT/shim"
+mkdir -p "$SHIM_DIR"
+cat > "$SHIM_DIR/rm" <<'SHIMEOF'
+#!/bin/bash
+exit 1
+SHIMEOF
+chmod 0755 -- "$SHIM_DIR/rm"
 fail_status=0
-WP2SHELL_CONFIG_FILE="$FAIL_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || fail_status=$?
-chmod 0755 "$FAIL_ROOT/run-x"
+PATH="$SHIM_DIR:$PATH" WP2SHELL_CONFIG_FILE="$FAIL_CONF" \
+    "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || fail_status=$?
 expect_equal "een mislukte verwijdering geeft een exitcode die niet nul is" "1" "$fail_status"
+expect_equal "de map die niet verwijderd kon worden staat er nog" "aanwezig" \
+    "$([ -d "$FAIL_ROOT/20260813-120000-1/site-onvolledig" ] && printf 'aanwezig' || printf 'weg')"
+
+UNSAFE_CONF="$WORKROOT/onveilig.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"/\"|" "$REPO_ROOT/config/wp2shell.conf" > "$UNSAFE_CONF"
+unsafe_status=0
+WP2SHELL_CONFIG_FILE="$UNSAFE_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || unsafe_status=$?
+expect_equal "de hoofdmap wordt geweigerd als backupboom" "2" "$unsafe_status"
+
+VREEMD_ROOT="$WORKROOT/vreemde-boom"
+mkdir -p "$VREEMD_ROOT/klantdata"
+VREEMD_CONF="$WORKROOT/vreemd.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$VREEMD_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$VREEMD_CONF"
+vreemd_status=0
+WP2SHELL_CONFIG_FILE="$VREEMD_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || vreemd_status=$?
+expect_equal "een map zonder runmappen wordt geweigerd" "2" "$vreemd_status"
+expect_equal "de vreemde inhoud is onaangeroerd" "aanwezig" \
+    "$([ -d "$VREEMD_ROOT/klantdata" ] && printf 'aanwezig' || printf 'weg')"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
