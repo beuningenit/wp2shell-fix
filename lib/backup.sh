@@ -274,6 +274,28 @@ backup_ledger_outstanding_kilobytes() {
     return 0
 }
 
+backup_ledger_write() {
+    local ledger=$1 bestaande=$2 nieuwe=$3
+    local tijdelijk
+    tijdelijk=$(mktemp "$ledger.XXXXXX" 2>/dev/null) || return 1
+    {
+        if [ -n "$bestaande" ]; then
+            printf '%s\n' "$bestaande"
+        fi
+        if [ -n "$nieuwe" ]; then
+            printf '%s\n' "$nieuwe"
+        fi
+    } > "$tijdelijk" 2>/dev/null || {
+        rm -f -- "$tijdelijk" 2>/dev/null || true
+        return 1
+    }
+    if ! mv -f -- "$tijdelijk" "$ledger" 2>/dev/null; then
+        rm -f -- "$tijdelijk" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
 backup_ledger_without_directory() {
     local ledger=$1 skip_dir=$2
     local needed rest
@@ -326,7 +348,7 @@ backup_reserve_space() {
         return 2
     fi
     overig=$(backup_ledger_without_directory "$ledger" "$backup_dir")
-    if ! { [ -n "$overig" ] && printf '%s\n' "$overig"; printf '%s %s\n' "$needed" "$backup_dir"; } > "$ledger" 2>/dev/null; then
+    if ! backup_ledger_write "$ledger" "$overig" "$needed $backup_dir"; then
         flock -u 8
         exec 8>&-
         backup_reservation_unavailable "Kan het reserveringsgrootboek niet bijwerken"
@@ -353,11 +375,8 @@ backup_release_space() {
         return 0
     fi
     overig=$(backup_ledger_without_directory "$ledger" "$backup_dir")
-    if [ -n "$overig" ]; then
-        printf '%s\n' "$overig" > "$ledger" 2>/dev/null || true
-    else
-        : > "$ledger" 2>/dev/null || true
-    fi
+    backup_ledger_write "$ledger" "$overig" "" || \
+        log_warn "Kon het reserveringsgrootboek niet bijwerken bij het vrijgeven van $backup_dir"
     flock -u 8
     exec 8>&-
     return 0
@@ -397,6 +416,10 @@ backup_space_is_sufficient() {
         ''|*[!0-9]*) margin=30 ;;
     esac
     local needed available site_size database_size=0
+    if ! backup_size_check_is_mandatory; then
+        log_warn "De ruimtecontrole staat uit voor $site_path, de backup gaat door zonder te toetsen of hij past"
+        return 0
+    fi
     site_size=$(backup_site_size_kilobytes "$site_path")
     if [ "$site_size" -eq 0 ]; then
         backup_report_unmeasurable "$site_path" "De omvang van de bestanden onder de docroot"

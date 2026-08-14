@@ -471,6 +471,32 @@ uitgezet_status=0
 ) || uitgezet_status=$?
 expect_equal "met de controle bewust uitgezet loopt het door" "0" "$uitgezet_status"
 
+: > "$WP2SHELL_FINDINGS_FILE"
+uitgezet_krap=0
+(
+    WP2SHELL_BACKUP_REQUIRE_SIZE_CHECK=0
+    WP2SHELL_STATE_DIR="$WORKROOT/state"
+    WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=999999999
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1
+) || uitgezet_krap=$?
+expect_equal "uitgezet betekent ook geen weigering bij een meetbare krappe site" "0" "$uitgezet_krap"
+
+ATOOM_STATE="$WORKROOT/atomair"
+mkdir -p "$ATOOM_STATE" "$WORKROOT/blijver" "$WORKROOT/vertrekker"
+(
+    WP2SHELL_STATE_DIR="$ATOOM_STATE"
+    backup_reset_reservations
+    printf '500 %s\n600 %s\n' "$WORKROOT/blijver" "$WORKROOT/vertrekker" > "$(backup_reservation_file)"
+    WP2SHELL_BACKUP_RESERVED_DIRECTORY="$WORKROOT/vertrekker"
+    backup_release_space
+)
+expect_equal "na vrijgave blijft de reservering van de andere worker staan" "1" \
+    "$(grep -c 'blijver' "$ATOOM_STATE/backup-reservering")"
+expect_equal "de vertrekkende reservering is verdwenen" "0" \
+    "$(grep -c 'vertrekker' "$ATOOM_STATE/backup-reservering")"
+expect_equal "er blijft geen tijdelijk grootboek achter" "0" \
+    "$(find "$ATOOM_STATE" -name 'backup-reservering.*' -not -name '*.lock' | wc -l | tr -d ' ')"
+
 GZIP_ROOT="$WORKROOT/gzip-stuk"
 mkdir -p "$GZIP_ROOT/20260813-120000-1"
 printf '{"tool":"wp2shell"}\n' > "$GZIP_ROOT/20260813-120000-1/.wp2shell-run"
