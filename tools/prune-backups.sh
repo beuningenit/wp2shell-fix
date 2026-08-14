@@ -447,6 +447,7 @@ fi
 
 printf '\nHerstelpunten, per site blijven de %s nieuwste staan:\n' "$KEEP"
 found_old=0
+gelijkstand=0
 huidige_site=''
 teller=0
 grensvergelijking=''
