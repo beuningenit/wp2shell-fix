@@ -71,6 +71,10 @@ if [ "${#KEEP}" -gt 4 ] || [ "$KEEP" -lt 1 ]; then
     printf 'De optie --keep verwacht een getal tussen 1 en 9999, niet %s\n' "$KEEP" >&2
     exit 2
 fi
+if [ "${#BACKUP_ROOT}" -lt 2 ]; then
+    printf 'Het pad naar de backupmap is te kort: %s\n' "$BACKUP_ROOT" >&2
+    exit 2
+fi
 
 if [ ! -d "$BACKUP_ROOT" ]; then
     printf 'Backupmap %s bestaat niet\n' "$BACKUP_ROOT" >&2
@@ -291,18 +295,22 @@ run_has_recovery_point() {
     return 1
 }
 
-ordered_runs=()
+geldige_punten=()
 while IFS= read -r line; do
     if [ -n "$line" ]; then
-        ordered_runs+=("$line")
+        geldige_punten+=("$line")
     fi
 done < <(
-    while IFS= read -r -d '' candidate; do
-        if run_is_ours "$candidate" && run_has_recovery_point "$candidate"; then
-            printf '%s %s\n' "$(stat -c '%Y' -- "$candidate" 2>/dev/null || printf '0')" "$candidate"
+    while IFS= read -r -d '' run_dir; do
+        if ! run_is_ours "$run_dir"; then
+            continue
         fi
-    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null) \
-        | sort -rn | cut -d' ' -f2-
+        while IFS= read -r -d '' site_dir; do
+            if site_has_recovery_point "$site_dir"; then
+                printf '%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(basename -- "$run_dir")" "$site_dir"
+            fi
+        done < <(find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 )
 
 printf 'Onvolledige backups zonder herstelwaarde:\n'
@@ -325,38 +333,30 @@ if [ "$found_incomplete" = "0" ]; then
     printf '   geen\n'
 fi
 
-unproven=0
-while IFS= read -r -d '' run_dir; do
-    if run_is_ours "$run_dir"; then
+printf '\nHerstelpunten, per site blijven de %s nieuwste staan:\n' "$KEEP"
+found_old=0
+huidige_site=''
+teller=0
+while IFS=$'\t' read -r site_id run_id site_dir; do
+    if [ -z "$site_id" ]; then
         continue
     fi
-    if [ "$unproven" = "0" ]; then
-        printf '\nOvergeslagen, geen bewijs dat deze mappen van wp2shell zijn:\n'
+    if [ "$site_id" != "$huidige_site" ]; then
+        huidige_site=$site_id
+        teller=0
     fi
-    unproven=1
-    printf '%-12s %6s MB  %s\n' "onbewezen" "$(($(directory_size_kilobytes "$run_dir") / 1024))" "$run_dir"
-done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
-if [ "$unproven" = "1" ]; then
-    printf 'Deze mappen zijn met rust gelaten. Backups van voor deze versie dragen nog\n'
-    printf 'geen markering; ruim die desgewenst handmatig op.\n'
-fi
-
-printf '\nVolledige backups, de %s nieuwste runs met een herstelpunt blijven staan:\n' "$KEEP"
-index=0
-found_old=0
-for run_dir in ${ordered_runs[@]+"${ordered_runs[@]}"}; do
-    index=$((index + 1))
-    if [ "$index" -le "$KEEP" ]; then
-        printf '%-12s %6s MB  %s\n' "behouden" "$(($(directory_size_kilobytes "$run_dir") / 1024))" "$run_dir"
+    teller=$((teller + 1))
+    if [ "$teller" -le "$KEEP" ]; then
+        printf '%-12s %6s MB  %s\n' "behouden" "$(($(directory_size_kilobytes "$site_dir") / 1024))" "$site_dir"
         continue
     fi
     found_old=1
-    remove_directory "$run_dir" "verouderd" || true
-done
-if [ "${#ordered_runs[@]}" -eq 0 ]; then
-    printf '   let op: geen enkele run bevat een volledig herstelpunt\n'
+    remove_directory "$site_dir" "verouderd" || true
+done < <(printf '%s\n' ${geldige_punten[@]+"${geldige_punten[@]}"} | LC_ALL=C sort -t"$(printf '\t')" -k1,1 -k2,2r)
+if [ "${#geldige_punten[@]}" -eq 0 ]; then
+    printf '   let op: er is geen enkel volledig herstelpunt gevonden\n'
 elif [ "$found_old" = "0" ]; then
-    printf '   geen verouderde runs\n'
+    printf '   geen verouderde herstelpunten\n'
 fi
 
 if [ "$APPLY" = "1" ]; then
@@ -364,8 +364,12 @@ if [ "$APPLY" = "1" ]; then
         if ! run_is_ours "$run_dir"; then
             continue
         fi
+        if find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q .; then
+            continue
+        fi
+        rm -f -- "$run_dir/.wp2shell-run" 2>/dev/null || true
         rmdir -- "$run_dir" 2>/dev/null || true
-    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -empty -print0 2>/dev/null)
+    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 fi
 
 printf '\n'

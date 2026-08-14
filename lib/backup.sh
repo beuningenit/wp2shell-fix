@@ -415,6 +415,10 @@ backup_space_is_sufficient() {
     case $margin in
         ''|*[!0-9]*) margin=30 ;;
     esac
+    if [ "${#margin}" -gt 4 ] || [ "$margin" -gt 1000 ]; then
+        log_warn "De ingestelde marge van $margin procent is onbruikbaar, er wordt met 30 procent gerekend"
+        margin=30
+    fi
     local needed available site_size database_size=0
     if ! backup_size_check_is_mandatory; then
         log_warn "De ruimtecontrole staat uit voor $site_path, de backup gaat door zonder te toetsen of hij past"
