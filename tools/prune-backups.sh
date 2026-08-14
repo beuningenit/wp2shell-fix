@@ -62,8 +62,15 @@ while [ "$#" -gt 0 ]; do
 done
 
 case $KEEP in
-    ''|*[!0-9]*) KEEP=3 ;;
+    ''|*[!0-9]*)
+        printf 'De optie --keep verwacht een geheel getal, niet %s\n' "$KEEP" >&2
+        exit 2
+        ;;
 esac
+if [ "${#KEEP}" -gt 4 ] || [ "$KEEP" -lt 1 ]; then
+    printf 'De optie --keep verwacht een getal tussen 1 en 9999, niet %s\n' "$KEEP" >&2
+    exit 2
+fi
 
 if [ ! -d "$BACKUP_ROOT" ]; then
     printf 'Backupmap %s bestaat niet\n' "$BACKUP_ROOT" >&2
@@ -113,7 +120,11 @@ if ! backup_root_is_trustworthy "$BACKUP_ROOT"; then
 fi
 
 PRUNE_LOCK=$LOCK_FILE
-if ! exec 9>"$PRUNE_LOCK" 2>/dev/null; then
+if ! lock_path_is_acceptable "$PRUNE_LOCK"; then
+    printf 'Er is niets verwijderd.\n' >&2
+    exit 2
+fi
+if ! exec 9>>"$PRUNE_LOCK" 2>/dev/null; then
     printf 'Het vergrendelingsbestand %s kan niet geopend worden, dus er valt niet vast\n' "$PRUNE_LOCK" >&2
     printf 'te stellen of er een wp2shell-run draait. Opruimen tijdens een lopende backup\n' >&2
     printf 'kan een backup verwijderen die op dat moment geschreven wordt. Er is niets\n' >&2
@@ -191,11 +202,35 @@ run_is_ours() {
     return 1
 }
 
+manifest_recorded_number() {
+    local manifest=$1 key=$2 value
+    value=$(sed -n "s/.*\"$key\":\([0-9]*\).*/\1/p" -- "$manifest" 2>/dev/null | head -1) || value=''
+    case $value in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    printf '%s' "$value"
+    return 0
+}
+
+file_size_or_zero() {
+    local size
+    size=$(stat -c '%s' -- "$1" 2>/dev/null) || size=0
+    case $size in
+        ''|*[!0-9]*) size=0 ;;
+    esac
+    printf '%s' "$size"
+    return 0
+}
+
 manifest_is_complete() {
-    local manifest=$1 site_dir archive dump
+    local manifest=$1 site_dir archive dump recorded actual
     if [ ! -s "$manifest" ]; then
         return 1
     fi
+    case $(tail -c 2 -- "$manifest" 2>/dev/null) in
+        '}'|'}'*) : ;;
+        *) return 1 ;;
+    esac
     if ! grep -q '"database_dump_bytes"' -- "$manifest" 2>/dev/null; then
         return 1
     fi
@@ -203,6 +238,24 @@ manifest_is_complete() {
     archive="$site_dir/files.tar.gz"
     dump="$site_dir/database.sql"
     if [ ! -s "$archive" ] || [ ! -s "$dump" ]; then
+        return 1
+    fi
+    if recorded=$(manifest_recorded_number "$manifest" files_archive_bytes); then
+        actual=$(file_size_or_zero "$archive")
+        if [ "$recorded" != "$actual" ]; then
+            return 1
+        fi
+    fi
+    if recorded=$(manifest_recorded_number "$manifest" database_dump_bytes); then
+        actual=$(file_size_or_zero "$dump")
+        if [ "$recorded" != "$actual" ]; then
+            return 1
+        fi
+    fi
+    if ! grep -q -m1 -i 'CREATE TABLE' -- "$dump" 2>/dev/null; then
+        return 1
+    fi
+    if ! gzip -t -- "$archive" 2>/dev/null; then
         return 1
     fi
     return 0

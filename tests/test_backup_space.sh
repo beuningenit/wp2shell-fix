@@ -33,11 +33,14 @@ expect_equal() {
 }
 
 schrijf_herstelpunt() {
-    local site_dir=$1
+    local site_dir=$1 archief_bytes dump_bytes
     mkdir -p -- "$site_dir"
-    head -c 1000 /dev/zero > "$site_dir/files.tar.gz"
-    printf 'CREATE TABLE wp_options;\n' > "$site_dir/database.sql"
-    printf '{"run_id":"x","files_archive_sha256":"aa","database_dump_bytes":24}\n' > "$site_dir/manifest.json"
+    printf 'inhoud van een site\n' | gzip -c > "$site_dir/files.tar.gz"
+    printf 'CREATE TABLE wp_options (id int);\n' > "$site_dir/database.sql"
+    archief_bytes=$(stat -c '%s' -- "$site_dir/files.tar.gz")
+    dump_bytes=$(stat -c '%s' -- "$site_dir/database.sql")
+    printf '{"run_id":"x","files_archive_sha256":"aa","files_archive_bytes":%s,"database_dump_bytes":%s}\n' \
+        "$archief_bytes" "$dump_bytes" > "$site_dir/manifest.json"
     return 0
 }
 
@@ -316,29 +319,55 @@ for optie in --keep --backup-dir --lock-file; do
     expect_equal "de optie $optie zonder waarde wordt geweigerd" "2" "$optie_status"
 done
 
-(
-    WP2SHELL_STATE_DIR="$WORKROOT/onbeschrijfbaar/state"
-    gesloten=0
-    backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1 || gesloten=1
-    printf '%s\n' "$gesloten" > "$WORKROOT/faalt-gesloten"
-) 2>/dev/null
-chmod 0555 "$WORKROOT" 2>/dev/null || true
+printf 'dit is een bestand, geen map\n' > "$WORKROOT/blokkade"
 gesloten_status=0
 (
-    WP2SHELL_STATE_DIR="$WORKROOT/kan-niet/state"
+    WP2SHELL_STATE_DIR="$WORKROOT/blokkade/state"
     WP2SHELL_PARALLEL_JOBS=4
     backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1
 ) || gesloten_status=1
-chmod 0755 "$WORKROOT" 2>/dev/null || true
 expect_equal "een onbeschrijfbaar grootboek blokkeert de reservering bij parallel draaien" "1" "$gesloten_status"
 
 sequentieel_status=0
 (
-    WP2SHELL_STATE_DIR="$WORKROOT/kan-niet/state"
+    WP2SHELL_STATE_DIR="$WORKROOT/blokkade/state"
     WP2SHELL_PARALLEL_JOBS=1
     backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1
 ) || sequentieel_status=1
 expect_equal "sequentieel draaien loopt door zonder grootboek, want er is geen tweede worker" "0" "$sequentieel_status"
+
+printf 'kostbare systeeminhoud\n' > "$WORKROOT/nep-systeembestand"
+groot_bestand="$WORKROOT/groot-bestand"
+head -c 8192 /dev/zero > "$groot_bestand"
+slot_status=0
+WP2SHELL_CONFIG_FILE="$CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --lock-file "$groot_bestand" >/dev/null 2>&1 || slot_status=$?
+expect_equal "een gevuld bestand wordt geweigerd als lockbestand" "2" "$slot_status"
+expect_equal "dat bestand is niet afgekapt" "8192" "$(stat -c '%s' -- "$groot_bestand")"
+
+for waarde in abc -1 0 99999; do
+    keep_status=0
+    WP2SHELL_CONFIG_FILE="$CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+        --keep "$waarde" --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || keep_status=$?
+    expect_equal "de waarde $waarde voor --keep wordt geweigerd" "2" "$keep_status"
+done
+
+KAPOT2_ROOT="$WORKROOT/kapot-archief"
+mkdir -p "$KAPOT2_ROOT/20260801-120000-1" "$KAPOT2_ROOT/20260813-120000-2/site1"
+printf '{"tool":"wp2shell"}\n' > "$KAPOT2_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$KAPOT2_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$KAPOT2_ROOT/20260801-120000-1/site1"
+printf 'dit is geen geldig gzip-archief\n' > "$KAPOT2_ROOT/20260813-120000-2/site1/files.tar.gz"
+printf 'CREATE TABLE wp_options;\n' > "$KAPOT2_ROOT/20260813-120000-2/site1/database.sql"
+printf '{"run_id":"x","database_dump_bytes":24}\n' > "$KAPOT2_ROOT/20260813-120000-2/site1/manifest.json"
+touch -d '2026-08-01' "$KAPOT2_ROOT/20260801-120000-1"
+touch -d '2026-08-13' "$KAPOT2_ROOT/20260813-120000-2"
+KAPOT2_CONF="$WORKROOT/kapot-archief.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$KAPOT2_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$KAPOT2_CONF"
+WP2SHELL_CONFIG_FILE="$KAPOT2_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een onleesbaar archief telt niet als herstelpunt" "aanwezig" \
+    "$([ -f "$KAPOT2_ROOT/20260801-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
