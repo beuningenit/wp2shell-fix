@@ -361,7 +361,7 @@ done < <(
         fi
         while IFS= read -r -d '' site_dir; do
             if site_has_recovery_point "$site_dir"; then
-                printf '%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(run_sort_key "$run_dir")" "$site_dir"
+                printf '%s\t%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(run_sort_key "$run_dir")" "$(basename -- "$run_dir")" "$site_dir"
             fi
         done < <(find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
     done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
@@ -391,7 +391,7 @@ printf '\nHerstelpunten, per site blijven de %s nieuwste staan:\n' "$KEEP"
 found_old=0
 huidige_site=''
 teller=0
-while IFS=$'\t' read -r site_id run_id site_dir; do
+while IFS=$'\t' read -r site_id run_key run_naam site_dir; do
     if [ -z "$site_id" ]; then
         continue
     fi
@@ -406,7 +406,8 @@ while IFS=$'\t' read -r site_id run_id site_dir; do
     fi
     found_old=1
     remove_directory "$site_dir" "verouderd" || true
-done < <(printf '%s\n' ${geldige_punten[@]+"${geldige_punten[@]}"} | LC_ALL=C sort -t"$(printf '\t')" -k1,1 -k2,2r)
+done < <(printf '%s\n' ${geldige_punten[@]+"${geldige_punten[@]}"} \
+    | LC_ALL=C sort -t"$(printf '\t')" -k1,1 -k2,2r -k3,3r -k4,4r)
 if [ "${#geldige_punten[@]}" -eq 0 ]; then
     printf '   let op: er is geen enkel volledig herstelpunt gevonden\n'
 elif [ "$found_old" = "0" ]; then

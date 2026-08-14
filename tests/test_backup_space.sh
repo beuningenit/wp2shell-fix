@@ -678,6 +678,21 @@ expect_equal "in een gemengde boom overleeft het nieuwste herstelpunt" "aanwezig
 expect_equal "en het oudere zonder markering wordt opgeruimd" "weg" \
     "$([ -d "$GEMENGD_ROOT/20260813-120000-1/site1" ] && printf 'aanwezig' || printf 'weg')"
 
+GELIJK_ROOT="$WORKROOT/zelfde-seconde"
+mkdir -p "$GELIJK_ROOT/20260814-090000-100" "$GELIJK_ROOT/20260814-090000-101"
+for run in 20260814-090000-100 20260814-090000-101; do
+    printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$GELIJK_ROOT/$run/.wp2shell-run"
+    schrijf_herstelpunt "$GELIJK_ROOT/$run/site1"
+done
+GELIJK_CONF="$WORKROOT/zelfde-seconde.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GELIJK_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GELIJK_CONF"
+WP2SHELL_CONFIG_FILE="$GELIJK_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "bij een gelijk tijdstip wint de laatst gestarte run" "aanwezig" \
+    "$([ -f "$GELIJK_ROOT/20260814-090000-101/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "en de eerder gestarte wordt opgeruimd" "weg" \
+    "$([ -d "$GELIJK_ROOT/20260814-090000-100/site1" ] && printf 'aanwezig' || printf 'weg')"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
