@@ -230,16 +230,33 @@ run_name_looks_like_run_id() {
     return 1
 }
 
+normaliseer_tijdsleutel() {
+    local ruw=$1 cijfers
+    cijfers=${ruw//[!0-9]/}
+    if [ "${#cijfers}" -lt 14 ]; then
+        while [ "${#cijfers}" -lt 14 ]; do
+            cijfers="${cijfers}0"
+        done
+    fi
+    printf '%s' "${cijfers:0:14}"
+    return 0
+}
+
 run_sort_key() {
-    local run_dir=$1 stempel=''
+    local run_dir=$1 stempel='' naam
     if [ -f "$run_dir/.wp2shell-run" ]; then
         stempel=$(sed -n 's/.*"created_at":"\([^"]*\)".*/\1/p' -- "$run_dir/.wp2shell-run" 2>/dev/null | head -1) || stempel=''
     fi
     if [ -n "$stempel" ]; then
-        printf '%s' "$stempel"
+        normaliseer_tijdsleutel "$stempel"
         return 0
     fi
-    printf '%s' "$(basename -- "$run_dir")"
+    naam=$(basename -- "$run_dir")
+    if run_name_looks_like_run_id "$run_dir"; then
+        normaliseer_tijdsleutel "${naam%%-*}${naam#*-}"
+        return 0
+    fi
+    printf '%s' "00000000000000"
     return 0
 }
 

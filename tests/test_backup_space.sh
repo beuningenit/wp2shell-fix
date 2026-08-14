@@ -664,6 +664,20 @@ expect_equal "een gzip zonder tar erin telt niet als herstelpunt" "weg" \
 expect_equal "de geldige oudere backup blijft daardoor staan" "aanwezig" \
     "$([ -f "$NEPTAR_ROOT/20260801-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
 
+GEMENGD_ROOT="$WORKROOT/gemengd"
+mkdir -p "$GEMENGD_ROOT/20260813-120000-1" "$GEMENGD_ROOT/20260814-090000-2"
+schrijf_herstelpunt "$GEMENGD_ROOT/20260813-120000-1/site1"
+schrijf_herstelpunt "$GEMENGD_ROOT/20260814-090000-2/site1"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$GEMENGD_ROOT/20260814-090000-2/.wp2shell-run"
+GEMENGD_CONF="$WORKROOT/gemengd.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GEMENGD_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GEMENGD_CONF"
+WP2SHELL_CONFIG_FILE="$GEMENGD_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "in een gemengde boom overleeft het nieuwste herstelpunt" "aanwezig" \
+    "$([ -f "$GEMENGD_ROOT/20260814-090000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "en het oudere zonder markering wordt opgeruimd" "weg" \
+    "$([ -d "$GEMENGD_ROOT/20260813-120000-1/site1" ] && printf 'aanwezig' || printf 'weg')"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
