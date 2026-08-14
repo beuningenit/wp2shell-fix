@@ -609,6 +609,38 @@ WP2SHELL_CONFIG_FILE="$TIJDSTIP_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
 expect_equal "een aangeraakte mtime verandert de volgorde niet, de run-id telt" "aanwezig" \
     "$([ -f "$TIJDSTIP_ROOT/20260813-120000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
 
+EIGENNAAM_ROOT="$WORKROOT/eigen-run-id"
+mkdir -p "$EIGENNAAM_ROOT/handmatig" "$EIGENNAAM_ROOT/20260813-120000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T10:00:00Z"}\n' > "$EIGENNAAM_ROOT/handmatig/.wp2shell-run"
+printf '{"tool":"wp2shell","created_at":"2026-08-13T10:00:00Z"}\n' > "$EIGENNAAM_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$EIGENNAAM_ROOT/handmatig/site1"
+schrijf_herstelpunt "$EIGENNAAM_ROOT/20260813-120000-2/site1"
+EIGENNAAM_CONF="$WORKROOT/eigen-run-id.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$EIGENNAAM_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$EIGENNAAM_CONF"
+eigennaam_status=0
+WP2SHELL_CONFIG_FILE="$EIGENNAAM_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || eigennaam_status=$?
+expect_equal "een run met een eigen run-id blokkeert het opruimen niet" "0" "$eigennaam_status"
+expect_equal "de markering bepaalt de volgorde, niet de mapnaam" "aanwezig" \
+    "$([ -f "$EIGENNAAM_ROOT/20260813-120000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de oudere run met eigen naam is opgeruimd" "weg" \
+    "$([ -d "$EIGENNAAM_ROOT/handmatig/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+DUBBEL_ROOT="$WORKROOT/dubbeltelling"
+mkdir -p "$DUBBEL_ROOT/20260801-120000-1/site-onvolledig" "$DUBBEL_ROOT/20260813-120000-2"
+printf '{"tool":"wp2shell"}\n' > "$DUBBEL_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$DUBBEL_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$DUBBEL_ROOT/20260801-120000-1/site1"
+schrijf_herstelpunt "$DUBBEL_ROOT/20260813-120000-2/site1"
+head -c 2000000 /dev/zero > "$DUBBEL_ROOT/20260801-120000-1/site-onvolledig/files.tar.gz"
+DUBBEL_CONF="$WORKROOT/dubbel.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$DUBBEL_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$DUBBEL_CONF"
+droog=$(WP2SHELL_CONFIG_FILE="$DUBBEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --keep 1 --lock-file "$WORKROOT/test.lock" 2>/dev/null | sed -n 's/.*zouden verwijderd worden, samen \([0-9]*\) MB/\1/p')
+echt=$(WP2SHELL_CONFIG_FILE="$DUBBEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" 2>/dev/null | sed -n 's/.*mappen verwijderd, \([0-9]*\) MB teruggewonnen/\1/p')
+expect_equal "de droge run schat evenveel als er werkelijk vrijkomt" "$echt" "$droog"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1

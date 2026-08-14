@@ -111,11 +111,14 @@ backup_root_is_trustworthy() {
         if [ ! -d "$entry" ]; then
             continue
         fi
+        if [ -f "$entry/.wp2shell-run" ] && grep -q '"tool":"wp2shell"' -- "$entry/.wp2shell-run" 2>/dev/null; then
+            continue
+        fi
         case $base in
             [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
             *)
                 printf 'Weigering: %s bevat %s, dat is geen runmap van deze toolkit\n' "$resolved" "$base" >&2
-                printf 'Een backupboom bevat uitsluitend mappen met een run-id.\n' >&2
+                printf 'Een backupboom bevat uitsluitend runmappen met een markering of een run-id.\n' >&2
                 return 1
                 ;;
         esac
@@ -198,14 +201,33 @@ remove_directory() {
     return 0
 }
 
+run_name_looks_like_run_id() {
+    case $(basename -- "$1") in
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) return 0 ;;
+    esac
+    return 1
+}
+
+run_sort_key() {
+    local run_dir=$1 stempel=''
+    if [ -f "$run_dir/.wp2shell-run" ]; then
+        stempel=$(sed -n 's/.*"created_at":"\([^"]*\)".*/\1/p' -- "$run_dir/.wp2shell-run" 2>/dev/null | head -1) || stempel=''
+    fi
+    if [ -n "$stempel" ]; then
+        printf '%s' "$stempel"
+        return 0
+    fi
+    printf '%s' "$(basename -- "$run_dir")"
+    return 0
+}
+
 run_is_ours() {
     local run_dir=$1 manifest
-    case $(basename -- "$run_dir") in
-        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
-        *) return 1 ;;
-    esac
     if [ -f "$run_dir/.wp2shell-run" ] && grep -q '"tool":"wp2shell"' -- "$run_dir/.wp2shell-run" 2>/dev/null; then
         return 0
+    fi
+    if ! run_name_looks_like_run_id "$run_dir"; then
+        return 1
     fi
     while IFS= read -r -d '' manifest; do
         if grep -q '"files_archive_sha256"' -- "$manifest" 2>/dev/null; then
@@ -307,7 +329,7 @@ done < <(
         fi
         while IFS= read -r -d '' site_dir; do
             if site_has_recovery_point "$site_dir"; then
-                printf '%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(basename -- "$run_dir")" "$site_dir"
+                printf '%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(run_sort_key "$run_dir")" "$site_dir"
             fi
         done < <(find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
     done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
