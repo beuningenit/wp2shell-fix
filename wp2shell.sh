@@ -269,7 +269,7 @@ setup_run_environment() {
 }
 
 check_dependencies() {
-    if ! require_command php sha1sum sha256sum curl date stat base64; then
+    if ! require_command php sha1sum sha256sum curl date stat base64 du df; then
         die "$EXIT_INTERNAL" "Niet alle vereiste commando's zijn aanwezig"
     fi
     detect_optional_commands

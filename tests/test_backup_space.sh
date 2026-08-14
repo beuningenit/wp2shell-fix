@@ -54,6 +54,18 @@ WP2SHELL_RUN_ID=testrun
 WP2SHELL_FINDINGS_FILE="$WORKROOT/findings.ndjson"
 : > "$WP2SHELL_FINDINGS_FILE"
 
+DBSTUB="$WORKROOT/wp-dbsize"
+cat > "$DBSTUB" <<'DBEOF'
+#!/bin/bash
+case " $* " in
+    *" db size "*) printf '1048576\n'; exit 0 ;;
+esac
+exit 0
+DBEOF
+chmod 0755 -- "$DBSTUB"
+WP2SHELL_WP_CLI_RESOLVED="$DBSTUB"
+EIGENAAR=$(id -un)
+
 SITE="$WORKROOT/home/klant/domains/a.nl/public_html"
 mkdir -p "$SITE"
 printf '<?php\n' > "$SITE/index.php"
@@ -85,12 +97,12 @@ expect_equal "een ontbrekende map levert geen fout op" "0" \
 
 WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=30
 expect_true "een normale site komt door de ruimtecontrole" \
-    "$(backup_space_is_sufficient "$SITE" "$WORKROOT" >/dev/null 2>&1 && printf 0 || printf 1)"
+    "$(backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1 && printf 0 || printf 1)"
 
 WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=999999999
 : > "$WP2SHELL_FINDINGS_FILE"
 space_status=0
-backup_space_is_sufficient "$SITE" "$WORKROOT" >/dev/null 2>&1 || space_status=$?
+backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1 || space_status=$?
 expect_equal "een onhaalbare marge blokkeert de backup" "1" "$space_status"
 tests_run=$((tests_run + 1))
 if grep -q '"category":"backup-space-insufficient"' "$WP2SHELL_FINDINGS_FILE"; then
@@ -396,7 +408,7 @@ reservering_status=0
     WP2SHELL_STATE_DIR="$WORKROOT/blokkade/state"
     WP2SHELL_PARALLEL_JOBS=4
     WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=1
-    backup_space_is_sufficient "$SITE" "$WORKROOT" >/dev/null 2>&1
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1
 ) || reservering_status=$?
 expect_equal "een mislukte reservering slaat de site over" "1" "$reservering_status"
 tests_run=$((tests_run + 1))
@@ -420,6 +432,44 @@ lockbewijs_status=0
 acquire_run_lock "$LOCKBEWIJS" >/dev/null 2>&1 || lockbewijs_status=1
 expect_equal "een bestaand bestand zonder markering wordt geweigerd als slot" "1" "$lockbewijs_status"
 expect_equal "de inhoud van dat bestand is onaangeroerd" "kostbare configuratie" "$(cat "$LOCKBEWIJS")"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+onmeetbaar_status=0
+(
+    WP2SHELL_STATE_DIR="$WORKROOT/state"
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "" >/dev/null 2>&1
+) || onmeetbaar_status=$?
+expect_equal "een onbekende databaseomvang blokkeert de backup niet" "0" "$onmeetbaar_status"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+geschat_status=0
+(
+    WP2SHELL_STATE_DIR="$WORKROOT/state"
+    WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=999999999
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "" >/dev/null 2>&1
+) || geschat_status=$?
+expect_equal "bij te weinig ruimte wordt de schatting wel gemeld" "1" "$geschat_status"
+tests_run=$((tests_run + 1))
+if grep -q 'geschat, de werkelijke omvang was niet op te vragen' "$WP2SHELL_FINDINGS_FILE"; then
+    printf 'ok   het bewijs vermeldt dat de databaseomvang geschat is\n'
+else
+    printf 'FAIL de schatting wordt niet als schatting gemeld\n' >&2
+    tests_failed=$((tests_failed + 1))
+fi
+
+: > "$WP2SHELL_FINDINGS_FILE"
+leeg_status=0
+backup_space_is_sufficient "$WORKROOT/bestaat-echt-niet" "$WORKROOT" "$(id -un)" >/dev/null 2>&1 || leeg_status=$?
+expect_equal "een onmeetbare docroot blokkeert de backup" "1" "$leeg_status"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+uitgezet_status=0
+(
+    WP2SHELL_BACKUP_REQUIRE_SIZE_CHECK=0
+    WP2SHELL_STATE_DIR="$WORKROOT/state"
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "" >/dev/null 2>&1
+) || uitgezet_status=$?
+expect_equal "met de controle bewust uitgezet loopt het door" "0" "$uitgezet_status"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
