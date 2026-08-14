@@ -419,10 +419,23 @@ if [ "$APPLY" = "1" ]; then
         if ! run_is_ours "$run_dir"; then
             continue
         fi
-        if find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q .; then
+        if find -P "$run_dir" -mindepth 1 -maxdepth 1 ! -name '.wp2shell-run' -print -quit 2>/dev/null | grep -q .; then
             continue
         fi
-        rm -f -- "$run_dir/.wp2shell-run" 2>/dev/null || true
+        if [ -f "$run_dir/.wp2shell-run" ]; then
+            markering_inhoud=$(cat -- "$run_dir/.wp2shell-run" 2>/dev/null) || markering_inhoud=''
+            if [ -z "$markering_inhoud" ]; then
+                continue
+            fi
+            rm -f -- "$run_dir/.wp2shell-run" 2>/dev/null || continue
+            if rmdir -- "$run_dir" 2>/dev/null; then
+                continue
+            fi
+            printf '%s\n' "$markering_inhoud" > "$run_dir/.wp2shell-run" 2>/dev/null || true
+            chmod 0600 -- "$run_dir/.wp2shell-run" 2>/dev/null || true
+            printf 'De runmap %s kon niet verwijderd worden, de markering is teruggezet\n' "$run_dir" >&2
+            continue
+        fi
         rmdir -- "$run_dir" 2>/dev/null || true
     done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 fi

@@ -693,6 +693,35 @@ expect_equal "bij een gelijk tijdstip wint de laatst gestarte run" "aanwezig" \
 expect_equal "en de eerder gestarte wordt opgeruimd" "weg" \
     "$([ -d "$GELIJK_ROOT/20260814-090000-100/site1" ] && printf 'aanwezig' || printf 'weg')"
 
+ROMMEL_ROOT="$WORKROOT/rommel"
+mkdir -p "$ROMMEL_ROOT/eigennaam" "$ROMMEL_ROOT/20260814-090000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T09:00:00Z"}\n' > "$ROMMEL_ROOT/eigennaam/.wp2shell-run"
+printf 'rommel\n' > "$ROMMEL_ROOT/eigennaam/los-bestand"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$ROMMEL_ROOT/20260814-090000-2/.wp2shell-run"
+schrijf_herstelpunt "$ROMMEL_ROOT/20260814-090000-2/site1"
+ROMMEL_CONF="$WORKROOT/rommel.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$ROMMEL_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$ROMMEL_CONF"
+WP2SHELL_CONFIG_FILE="$ROMMEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een runmap met los bestand houdt zijn markering" "aanwezig" \
+    "$([ -f "$ROMMEL_ROOT/eigennaam/.wp2shell-run" ] && printf 'aanwezig' || printf 'weg')"
+rommel_status=0
+WP2SHELL_CONFIG_FILE="$ROMMEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || rommel_status=$?
+expect_equal "de boom blijft daardoor bruikbaar bij een volgende run" "0" "$rommel_status"
+
+LEEG_ROOT="$WORKROOT/lege-eigennaam"
+mkdir -p "$LEEG_ROOT/handmatig" "$LEEG_ROOT/20260814-090000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T09:00:00Z"}\n' > "$LEEG_ROOT/handmatig/.wp2shell-run"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$LEEG_ROOT/20260814-090000-2/.wp2shell-run"
+schrijf_herstelpunt "$LEEG_ROOT/20260814-090000-2/site1"
+LEEG_CONF="$WORKROOT/lege-eigennaam.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$LEEG_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$LEEG_CONF"
+WP2SHELL_CONFIG_FILE="$LEEG_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een runmap met alleen een markering wordt wel opgeruimd" "weg" \
+    "$([ -d "$LEEG_ROOT/handmatig" ] && printf 'aanwezig' || printf 'weg')"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
