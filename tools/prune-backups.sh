@@ -361,6 +361,23 @@ run_has_recovery_point() {
     return 1
 }
 
+eigen_runs=()
+while IFS= read -r -d '' kandidaat; do
+    if run_is_ours "$kandidaat"; then
+        eigen_runs+=("$kandidaat")
+    fi
+done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+
+run_was_ours() {
+    local gezocht=$1 bekend
+    for bekend in ${eigen_runs[@]+"${eigen_runs[@]}"}; do
+        if [ "$bekend" = "$gezocht" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 geldige_punten=()
 while IFS= read -r line; do
     if [ -n "$line" ]; then
@@ -368,7 +385,7 @@ while IFS= read -r line; do
     fi
 done < <(
     while IFS= read -r -d '' run_dir; do
-        if ! run_is_ours "$run_dir"; then
+        if ! run_was_ours "$run_dir"; then
             continue
         fi
         while IFS= read -r -d '' site_dir; do
@@ -389,7 +406,7 @@ while IFS= read -r -d '' site_dir; do
     remove_directory "$site_dir" "onvolledig" || true
 done < <(
     while IFS= read -r -d '' run_dir; do
-        if ! run_is_ours "$run_dir"; then
+        if ! run_was_ours "$run_dir"; then
             continue
         fi
         find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null
@@ -428,7 +445,7 @@ fi
 
 if [ "$APPLY" = "1" ]; then
     while IFS= read -r -d '' run_dir; do
-        if ! run_is_ours "$run_dir"; then
+        if ! run_was_ours "$run_dir"; then
             continue
         fi
         if find -P "$run_dir" -mindepth 1 -maxdepth 1 ! -name '.wp2shell-run' -print -quit 2>/dev/null | grep -q .; then

@@ -745,6 +745,20 @@ acquire_run_lock "$STAART" >/dev/null 2>&1 || staart_status=1
 expect_equal "een slot met een extra lege regel wordt geweigerd" "1" "$staart_status"
 expect_equal "de grootte daarvan is onveranderd" "5" "$(stat -c '%s' -- "$STAART")"
 
+OUDRUN_ROOT="$WORKROOT/oude-run-zonder-markering"
+mkdir -p "$OUDRUN_ROOT/20260801-120000-1" "$OUDRUN_ROOT/20260814-090000-2"
+schrijf_herstelpunt "$OUDRUN_ROOT/20260801-120000-1/site1"
+schrijf_herstelpunt "$OUDRUN_ROOT/20260814-090000-2/site1"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$OUDRUN_ROOT/20260814-090000-2/.wp2shell-run"
+OUDRUN_CONF="$WORKROOT/oude-run.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$OUDRUN_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$OUDRUN_CONF"
+WP2SHELL_CONFIG_FILE="$OUDRUN_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een run zonder markering laat na het opruimen geen lege map achter" "weg" \
+    "$([ -d "$OUDRUN_ROOT/20260801-120000-1" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "het nieuwste herstelpunt blijft daarbij staan" "aanwezig" \
+    "$([ -f "$OUDRUN_ROOT/20260814-090000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
