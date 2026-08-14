@@ -449,6 +449,7 @@ printf '\nHerstelpunten, per site blijven de %s nieuwste staan:\n' "$KEEP"
 found_old=0
 huidige_site=''
 teller=0
+grensvergelijking=''
 while IFS=$'\t' read -r site_id run_key run_moment run_naam site_dir; do
     if [ -z "$site_id" ]; then
         continue
@@ -456,10 +457,17 @@ while IFS=$'\t' read -r site_id run_key run_moment run_naam site_dir; do
     if [ "$site_id" != "$huidige_site" ]; then
         huidige_site=$site_id
         teller=0
+        grensvergelijking=''
     fi
     teller=$((teller + 1))
     if [ "$teller" -le "$KEEP" ]; then
         printf '%-12s %6s MB  %s\n' "behouden" "$(($(directory_size_kilobytes "$site_dir") / 1024))" "$site_dir"
+        grensvergelijking="$run_key|$run_moment"
+        continue
+    fi
+    if [ -n "$grensvergelijking" ] && [ "$run_key|$run_moment" = "$grensvergelijking" ]; then
+        printf '%-12s %6s MB  %s\n' "gelijkstand" "$(($(directory_size_kilobytes "$site_dir") / 1024))" "$site_dir"
+        gelijkstand=1
         continue
     fi
     found_old=1
@@ -470,6 +478,10 @@ if [ "${#geldige_punten[@]}" -eq 0 ]; then
     printf '   let op: er is geen enkel volledig herstelpunt gevonden\n'
 elif [ "$found_old" = "0" ]; then
     printf '   geen verouderde herstelpunten\n'
+fi
+if [ "$gelijkstand" = "1" ]; then
+    printf 'Enkele herstelpunten hebben hetzelfde aanmaaktijdstip en zijn niet te ordenen.\n'
+    printf 'Die blijven allemaal staan, want willekeurig kiezen kan de nieuwste kosten.\n'
 fi
 
 if [ "$APPLY" = "1" ]; then

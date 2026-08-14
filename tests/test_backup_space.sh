@@ -774,6 +774,23 @@ expect_equal "een nieuwere backup in een hergebruikte oude run blijft staan" "aa
 expect_equal "de oudere backup uit de nieuwere run wordt opgeruimd" "weg" \
     "$([ -d "$HERGEBRUIK_ROOT/20260810-120000-2/site1" ] && printf 'aanwezig' || printf 'weg')"
 
+GELIJKSTAND_ROOT="$WORKROOT/gelijkstand"
+mkdir -p "$GELIJKSTAND_ROOT/z-oud" "$GELIJKSTAND_ROOT/a-nieuw"
+for run in z-oud a-nieuw; do
+    printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$GELIJKSTAND_ROOT/$run/.wp2shell-run"
+    schrijf_herstelpunt "$GELIJKSTAND_ROOT/$run/site1" "2026-08-14T09:00:00Z"
+done
+touch -d '2026-08-14 09:00:00' "$GELIJKSTAND_ROOT/z-oud/site1/manifest.json" \
+    "$GELIJKSTAND_ROOT/a-nieuw/site1/manifest.json"
+GELIJKSTAND_CONF="$WORKROOT/gelijkstand.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GELIJKSTAND_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GELIJKSTAND_CONF"
+WP2SHELL_CONFIG_FILE="$GELIJKSTAND_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "bij een onbesliste gelijkstand blijft het ene herstelpunt staan" "aanwezig" \
+    "$([ -d "$GELIJKSTAND_ROOT/z-oud/site1" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "en het andere ook" "aanwezig" \
+    "$([ -d "$GELIJKSTAND_ROOT/a-nieuw/site1" ] && printf 'aanwezig' || printf 'weg')"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
