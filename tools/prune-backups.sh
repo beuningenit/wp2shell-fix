@@ -29,10 +29,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         --help|-h)
             printf 'Gebruik: %s [--apply] [--keep <aantal>] [--backup-dir <pad>]\n\n' "$0"
-            printf 'Zonder --apply wordt alleen getoond wat er zou gebeuren.\n'
+            printf 'Zonder --apply wordt alleen getoond wat er zou gebeuren en verandert er\n'
+            printf 'niets op de schijf.\n'
             printf 'Onvolledige backups, te herkennen aan een ontbrekende manifest.json,\n'
             printf 'hebben geen herstelwaarde en worden altijd als eerste aangewezen.\n'
-            printf 'Van de volledige backups blijven de %s nieuwste runs staan.\n' "$KEEP"
+            printf 'Van de runs met een herstelpunt blijven de %s nieuwste staan.\n' "$KEEP"
             exit 0
             ;;
         *)
@@ -63,25 +64,53 @@ fi
 
 reclaimed=0
 removed=0
+failures=0
 
-remove_directory() {
-    local target=$1 label=$2 size
-    size=$(du -sk -- "$target" 2>/dev/null | cut -f1) || size=0
+directory_size_kilobytes() {
+    local size
+    size=$(du -sk -- "$1" 2>/dev/null | cut -f1) || size=0
     case $size in
         ''|*[!0-9]*) size=0 ;;
     esac
+    printf '%s' "$size"
+}
+
+remove_directory() {
+    local target=$1 label=$2 size
+    size=$(directory_size_kilobytes "$target")
     printf '%-12s %6s MB  %s\n' "$label" "$((size / 1024))" "$target"
-    reclaimed=$((reclaimed + size))
-    removed=$((removed + 1))
     if [ "$APPLY" != "1" ]; then
+        reclaimed=$((reclaimed + size))
+        removed=$((removed + 1))
         return 0
     fi
     if ! rm -rf -- "$target" 2>/dev/null; then
-        printf '   VERWIJDEREN MISLUKT\n' >&2
+        printf '   VERWIJDEREN MISLUKT: %s\n' "$target" >&2
+        failures=$((failures + 1))
         return 1
     fi
+    reclaimed=$((reclaimed + size))
+    removed=$((removed + 1))
     return 0
 }
+
+run_has_recovery_point() {
+    find -P "$1" -mindepth 2 -maxdepth 2 -name manifest.json -type f -print -quit 2>/dev/null | grep -q .
+}
+
+ordered_runs=()
+while IFS= read -r line; do
+    if [ -n "$line" ]; then
+        ordered_runs+=("$line")
+    fi
+done < <(
+    while IFS= read -r -d '' candidate; do
+        if run_has_recovery_point "$candidate"; then
+            printf '%s %s\n' "$(stat -c '%Y' -- "$candidate" 2>/dev/null || printf '0')" "$candidate"
+        fi
+    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null) \
+        | sort -rn | cut -d' ' -f2-
+)
 
 printf 'Onvolledige backups zonder herstelwaarde:\n'
 found_incomplete=0
@@ -90,42 +119,33 @@ while IFS= read -r -d '' site_dir; do
         continue
     fi
     found_incomplete=1
-    remove_directory "$site_dir" "onvolledig"
+    remove_directory "$site_dir" "onvolledig" || true
 done < <(find -P "$BACKUP_ROOT" -mindepth 2 -maxdepth 2 -type d -print0 2>/dev/null)
 if [ "$found_incomplete" = "0" ]; then
     printf '   geen\n'
 fi
 
 printf '\nVolledige backups, de %s nieuwste runs met een herstelpunt blijven staan:\n' "$KEEP"
-mapfile -t run_dirs < <(
-    while IFS= read -r -d '' candidate; do
-        if find -P "$candidate" -mindepth 2 -maxdepth 2 -name manifest.json -type f -print -quit 2>/dev/null | grep -q .; then
-            printf '%s %s\n' "$(stat -c '%Y' -- "$candidate" 2>/dev/null || printf '0')" "$candidate"
-        fi
-    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null) | sort -rn | cut -d' ' -f2-
-)
 index=0
 found_old=0
-for run_dir in "${run_dirs[@]}"; do
-    if [ -z "$run_dir" ]; then
-        continue
-    fi
+for run_dir in ${ordered_runs[@]+"${ordered_runs[@]}"}; do
     index=$((index + 1))
     if [ "$index" -le "$KEEP" ]; then
-        printf '%-12s %6s MB  %s\n' "behouden" "$(($(du -sk -- "$run_dir" 2>/dev/null | cut -f1) / 1024))" "$run_dir"
+        printf '%-12s %6s MB  %s\n' "behouden" "$(($(directory_size_kilobytes "$run_dir") / 1024))" "$run_dir"
         continue
     fi
     found_old=1
-    remove_directory "$run_dir" "verouderd"
+    remove_directory "$run_dir" "verouderd" || true
 done
-if [ "$found_old" = "0" ]; then
+if [ "${#ordered_runs[@]}" -eq 0 ]; then
+    printf '   let op: geen enkele run bevat een volledig herstelpunt\n'
+elif [ "$found_old" = "0" ]; then
     printf '   geen verouderde runs\n'
 fi
-if [ "${#run_dirs[@]}" -eq 0 ]; then
-    printf '   let op: geen enkele run bevat een volledig herstelpunt\n'
-fi
 
-find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+if [ "$APPLY" = "1" ]; then
+    find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+fi
 
 printf '\n'
 if [ "$APPLY" = "1" ]; then
@@ -134,5 +154,10 @@ if [ "$APPLY" = "1" ]; then
 else
     printf '%s mappen zouden verwijderd worden, samen %s MB\n' "$removed" "$((reclaimed / 1024))"
     printf 'Draai opnieuw met --apply om dat daadwerkelijk te doen.\n'
+fi
+
+if [ "$failures" -gt 0 ]; then
+    printf '%s mappen konden niet verwijderd worden\n' "$failures" >&2
+    exit 1
 fi
 exit 0

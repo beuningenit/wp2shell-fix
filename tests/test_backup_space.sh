@@ -110,6 +110,42 @@ expect_equal "met --apply blijven alleen de herstelpunten over" "1" \
 expect_equal "het herstelpunt zelf is bewaard" "1" \
     "$(find "$PRUNE_ROOT" -name manifest.json -type f | wc -l | tr -d ' ')"
 
+ORDER_ROOT="$WORKROOT/volgorde"
+mkdir -p "$ORDER_ROOT/run-oud/site1" "$ORDER_ROOT/run-oud/site-onvolledig" "$ORDER_ROOT/run-nieuw/site1"
+printf '{}\n' > "$ORDER_ROOT/run-oud/site1/manifest.json"
+printf '{}\n' > "$ORDER_ROOT/run-nieuw/site1/manifest.json"
+head -c 1000 /dev/zero > "$ORDER_ROOT/run-oud/site-onvolledig/files.tar.gz"
+touch -d '2026-08-01' "$ORDER_ROOT/run-oud"
+touch -d '2026-08-13' "$ORDER_ROOT/run-nieuw"
+ORDER_CONF="$WORKROOT/volgorde.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$ORDER_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$ORDER_CONF"
+WP2SHELL_CONFIG_FILE="$ORDER_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --keep 1 >/dev/null 2>&1
+expect_equal "de nieuwste run met een herstelpunt overleeft het opruimen" "aanwezig" \
+    "$([ -d "$ORDER_ROOT/run-nieuw" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de oudere run wordt wel opgeruimd" "weg" \
+    "$([ -d "$ORDER_ROOT/run-oud" ] && printf 'aanwezig' || printf 'weg')"
+
+DRY_ROOT="$WORKROOT/droog"
+mkdir -p "$DRY_ROOT/lege-run" "$DRY_ROOT/run-1/site1"
+printf '{}\n' > "$DRY_ROOT/run-1/site1/manifest.json"
+DRY_CONF="$WORKROOT/droog.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$DRY_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$DRY_CONF"
+voor=$(find "$DRY_ROOT" | LC_ALL=C sort)
+WP2SHELL_CONFIG_FILE="$DRY_CONF" "$REPO_ROOT/tools/prune-backups.sh" >/dev/null 2>&1
+na=$(find "$DRY_ROOT" | LC_ALL=C sort)
+expect_equal "zonder --apply verandert er niets op de schijf, ook geen lege runmap" "$voor" "$na"
+
+FAIL_ROOT="$WORKROOT/onverwijderbaar"
+mkdir -p "$FAIL_ROOT/run-x/site-onvolledig"
+head -c 100 /dev/zero > "$FAIL_ROOT/run-x/site-onvolledig/files.tar.gz"
+chmod 0555 "$FAIL_ROOT/run-x"
+FAIL_CONF="$WORKROOT/onverwijderbaar.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$FAIL_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$FAIL_CONF"
+fail_status=0
+WP2SHELL_CONFIG_FILE="$FAIL_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || fail_status=$?
+chmod 0755 "$FAIL_ROOT/run-x"
+expect_equal "een mislukte verwijdering geeft een exitcode die niet nul is" "1" "$fail_status"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1
