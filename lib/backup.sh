@@ -127,6 +127,84 @@ write_backup_manifest() {
     return 0
 }
 
+discard_incomplete_backup() {
+    local backup_dir=$1
+    local root
+    root=$(backup_root_for_run)
+    if [ -z "$backup_dir" ] || [ ! -d "$backup_dir" ]; then
+        return 0
+    fi
+    if ! path_is_lexically_within "$backup_dir" "$root"; then
+        log_warn "Onvolledige backupmap ligt buiten de verwachte boom en blijft staan: $backup_dir"
+        return 0
+    fi
+    if [ -f "$backup_dir/manifest.json" ]; then
+        return 0
+    fi
+    local freed=0
+    freed=$(du -sk -- "$backup_dir" 2>/dev/null | cut -f1) || freed=0
+    case $freed in
+        ''|*[!0-9]*) freed=0 ;;
+    esac
+    if rm -rf -- "$backup_dir" 2>/dev/null; then
+        log_warn "Onvolledige backup verwijderd, dat gaf $((freed / 1024)) MB terug: $backup_dir"
+        return 0
+    fi
+    log_error "Kon de onvolledige backup niet verwijderen: $backup_dir"
+    return 1
+}
+
+backup_site_size_kilobytes() {
+    local site_path=$1 size
+    size=$(du -sk --one-file-system -- "$site_path" 2>/dev/null | cut -f1) || size=0
+    case $size in
+        ''|*[!0-9]*) size=0 ;;
+    esac
+    printf '%s' "$size"
+    return 0
+}
+
+backup_available_kilobytes() {
+    local target=$1 available
+    available=$(df -Pk -- "$target" 2>/dev/null | awk 'NR==2 {print $4}') || available=0
+    case $available in
+        ''|*[!0-9]*) available=0 ;;
+    esac
+    printf '%s' "$available"
+    return 0
+}
+
+backup_space_is_sufficient() {
+    local site_path=$1 backup_dir=$2
+    local margin=${WP2SHELL_BACKUP_FREE_MARGIN_PERCENT:-30}
+    case $margin in
+        ''|*[!0-9]*) margin=30 ;;
+    esac
+    local needed available site_size
+    site_size=$(backup_site_size_kilobytes "$site_path")
+    available=$(backup_available_kilobytes "$backup_dir")
+    if [ "$site_size" -eq 0 ] || [ "$available" -eq 0 ]; then
+        log_warn "Kon de vrije ruimte voor $backup_dir niet vaststellen, de backup gaat door zonder deze controle"
+        return 0
+    fi
+    needed=$((site_size + (site_size * margin / 100)))
+    if [ "$available" -ge "$needed" ]; then
+        return 0
+    fi
+    log_error "Te weinig vrije ruimte voor een backup van $site_path: $((available / 1024)) MB beschikbaar, $((needed / 1024)) MB nodig"
+    record_finding \
+        "site=$site_path" \
+        "severity=$SEVERITY_HIGH" \
+        "confidence=$CONFIDENCE_HIGH" \
+        "category=backup-space-insufficient" \
+        "title=Te weinig schijfruimte voor een backup" \
+        "detail=De backup is niet gestart omdat er te weinig vrije ruimte is op de doelmap. De site is daardoor niet gewijzigd. Zonder deze controle zou de backup de schijf hebben volgeschreven, wat alle klanten op deze server raakt." \
+        "evidence=beschikbaar $((available / 1024)) MB, nodig $((needed / 1024)) MB inclusief een marge van $margin procent" \
+        "remediation=Ruim oude backups op met tools/prune-backups.sh of wijs met --backup-dir een locatie met meer ruimte aan." \
+        "action=skipped"
+    return 1
+}
+
 backup_site() {
     local site_path=$1 owner_user=$2
     local backup_dir archive dump manifest
@@ -145,18 +223,26 @@ backup_site() {
     archive="$backup_dir/files.tar.gz"
     dump="$backup_dir/database.sql"
     manifest="$backup_dir/manifest.json"
+    if ! backup_space_is_sufficient "$site_path" "$backup_dir"; then
+        discard_incomplete_backup "$backup_dir"
+        return 1
+    fi
     log_info "Backup van bestanden voor $site_path"
     if ! backup_files_archive "$site_path" "$archive"; then
+        discard_incomplete_backup "$backup_dir"
         return 1
     fi
     if ! verify_files_archive "$archive"; then
+        discard_incomplete_backup "$backup_dir"
         return 1
     fi
     log_info "Backup van database voor $site_path"
     if ! backup_database_dump "$site_path" "$owner_user" "$dump"; then
+        discard_incomplete_backup "$backup_dir"
         return 1
     fi
     if ! verify_database_dump "$dump"; then
+        discard_incomplete_backup "$backup_dir"
         return 1
     fi
     write_backup_manifest "$manifest" "$site_path" "$owner_user" "$archive" "$dump"
