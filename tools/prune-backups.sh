@@ -71,10 +71,45 @@ if [ "${#KEEP}" -gt 4 ] || [ "$KEEP" -lt 1 ]; then
     printf 'De optie --keep verwacht een getal tussen 1 en 9999, niet %s\n' "$KEEP" >&2
     exit 2
 fi
+if [ "${#BACKUP_ROOT}" -lt 2 ]; then
+    printf 'Het pad naar de backupmap is te kort: %s\n' "$BACKUP_ROOT" >&2
+    exit 2
+fi
 
 if [ ! -d "$BACKUP_ROOT" ]; then
     printf 'Backupmap %s bestaat niet\n' "$BACKUP_ROOT" >&2
     exit 1
+fi
+
+for benodigd in tar gzip du df find stat grep sed mktemp; do
+    if ! command -v "$benodigd" >/dev/null 2>&1; then
+        printf 'Het commando %s ontbreekt. Zonder dat commando is niet vast te stellen of\n' "$benodigd" >&2
+        printf 'een backup bruikbaar is, en dan zou elke backup als onbruikbaar gelden en\n' >&2
+        printf 'verwijderd worden. Er is niets verwijderd.\n' >&2
+        exit 2
+    fi
+done
+
+archiefcontrole_werkt() {
+    local proefmap resultaat=0
+    proefmap=$(mktemp -d) || return 1
+    mkdir -p -- "$proefmap/inhoud" 2>/dev/null || resultaat=1
+    printf 'proef\n' > "$proefmap/inhoud/bestand" 2>/dev/null || resultaat=1
+    if [ "$resultaat" -eq 0 ]; then
+        tar --create --gzip --file="$proefmap/proef.tar.gz" --directory="$proefmap" inhoud 2>/dev/null || resultaat=1
+    fi
+    if [ "$resultaat" -eq 0 ]; then
+        tar --list --file="$proefmap/proef.tar.gz" >/dev/null 2>&1 || resultaat=1
+    fi
+    rm -rf -- "$proefmap" 2>/dev/null || true
+    return "$resultaat"
+}
+
+if ! archiefcontrole_werkt; then
+    printf 'Een zelfgemaakt proefarchief kon niet gelezen worden, dus tar of gzip werkt hier\n' >&2
+    printf 'niet naar behoren. Elke geldige backup zou dan als onbruikbaar gelden en\n' >&2
+    printf 'verwijderd worden. Er is niets verwijderd.\n' >&2
+    exit 2
 fi
 
 backup_root_is_trustworthy() {
@@ -98,11 +133,14 @@ backup_root_is_trustworthy() {
         if [ ! -d "$entry" ]; then
             continue
         fi
+        if [ -f "$entry/.wp2shell-run" ] && grep -q '"tool":"wp2shell"' -- "$entry/.wp2shell-run" 2>/dev/null; then
+            continue
+        fi
         case $base in
             [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
             *)
                 printf 'Weigering: %s bevat %s, dat is geen runmap van deze toolkit\n' "$resolved" "$base" >&2
-                printf 'Een backupboom bevat uitsluitend mappen met een run-id.\n' >&2
+                printf 'Een backupboom bevat uitsluitend runmappen met een markering of een run-id.\n' >&2
                 return 1
                 ;;
         esac
@@ -185,14 +223,91 @@ remove_directory() {
     return 0
 }
 
+run_name_looks_like_run_id() {
+    case $(basename -- "$1") in
+        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) return 0 ;;
+    esac
+    return 1
+}
+
+normaliseer_tijdsleutel() {
+    local ruw=$1 cijfers
+    cijfers=${ruw//[!0-9]/}
+    if [ "${#cijfers}" -lt 14 ]; then
+        while [ "${#cijfers}" -lt 14 ]; do
+            cijfers="${cijfers}0"
+        done
+    fi
+    printf '%s' "${cijfers:0:14}"
+    return 0
+}
+
+run_creation_moment() {
+    local run_dir=$1 moment=''
+    if [ -f "$run_dir/.wp2shell-run" ]; then
+        moment=$(stat -c '%.9Y' -- "$run_dir/.wp2shell-run" 2>/dev/null) || moment=''
+    fi
+    case ${moment:-} in
+        ''|*[!0-9.]*) moment=0 ;;
+    esac
+    printf '%s' "$moment"
+    return 0
+}
+
+site_sort_key() {
+    local site_dir=$1 run_dir=$2 stempel=''
+    if [ -f "$site_dir/manifest.json" ]; then
+        stempel=$(sed -n 's/.*"created_at":"\([^"]*\)".*/\1/p' -- "$site_dir/manifest.json" 2>/dev/null | head -1) || stempel=''
+    fi
+    if [ -n "$stempel" ]; then
+        normaliseer_tijdsleutel "$stempel"
+        return 0
+    fi
+    run_sort_key "$run_dir"
+    return 0
+}
+
+site_creation_moment() {
+    local site_dir=$1 run_dir=$2 moment=''
+    if [ -f "$site_dir/manifest.json" ]; then
+        moment=$(stat -c '%.9Y' -- "$site_dir/manifest.json" 2>/dev/null) || moment=''
+    fi
+    case ${moment:-} in
+        ''|*[!0-9.]*) moment='' ;;
+    esac
+    if [ -n "$moment" ]; then
+        printf '%s' "$moment"
+        return 0
+    fi
+    run_creation_moment "$run_dir"
+    return 0
+}
+
+run_sort_key() {
+    local run_dir=$1 stempel='' naam
+    if [ -f "$run_dir/.wp2shell-run" ]; then
+        stempel=$(sed -n 's/.*"created_at":"\([^"]*\)".*/\1/p' -- "$run_dir/.wp2shell-run" 2>/dev/null | head -1) || stempel=''
+    fi
+    if [ -n "$stempel" ]; then
+        normaliseer_tijdsleutel "$stempel"
+        return 0
+    fi
+    naam=$(basename -- "$run_dir")
+    if run_name_looks_like_run_id "$run_dir"; then
+        normaliseer_tijdsleutel "${naam%%-*}${naam#*-}"
+        return 0
+    fi
+    printf '%s' "00000000000000"
+    return 0
+}
+
 run_is_ours() {
     local run_dir=$1 manifest
-    case $(basename -- "$run_dir") in
-        [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
-        *) return 1 ;;
-    esac
     if [ -f "$run_dir/.wp2shell-run" ] && grep -q '"tool":"wp2shell"' -- "$run_dir/.wp2shell-run" 2>/dev/null; then
         return 0
+    fi
+    if ! run_name_looks_like_run_id "$run_dir"; then
+        return 1
     fi
     while IFS= read -r -d '' manifest; do
         if grep -q '"files_archive_sha256"' -- "$manifest" 2>/dev/null; then
@@ -255,7 +370,7 @@ manifest_is_complete() {
     if ! grep -q -m1 -i 'CREATE TABLE' -- "$dump" 2>/dev/null; then
         return 1
     fi
-    if ! gzip -t -- "$archive" 2>/dev/null; then
+    if ! tar --list --file="$archive" >/dev/null 2>&1; then
         return 1
     fi
     return 0
@@ -275,18 +390,39 @@ run_has_recovery_point() {
     return 1
 }
 
-ordered_runs=()
+eigen_runs=()
+while IFS= read -r -d '' kandidaat; do
+    if run_is_ours "$kandidaat"; then
+        eigen_runs+=("$kandidaat")
+    fi
+done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+
+run_was_ours() {
+    local gezocht=$1 bekend
+    for bekend in ${eigen_runs[@]+"${eigen_runs[@]}"}; do
+        if [ "$bekend" = "$gezocht" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+geldige_punten=()
 while IFS= read -r line; do
     if [ -n "$line" ]; then
-        ordered_runs+=("$line")
+        geldige_punten+=("$line")
     fi
 done < <(
-    while IFS= read -r -d '' candidate; do
-        if run_is_ours "$candidate" && run_has_recovery_point "$candidate"; then
-            printf '%s %s\n' "$(stat -c '%Y' -- "$candidate" 2>/dev/null || printf '0')" "$candidate"
+    while IFS= read -r -d '' run_dir; do
+        if ! run_was_ours "$run_dir"; then
+            continue
         fi
-    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null) \
-        | sort -rn | cut -d' ' -f2-
+        while IFS= read -r -d '' site_dir; do
+            if site_has_recovery_point "$site_dir"; then
+                printf '%s\t%s\t%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(site_sort_key "$site_dir" "$run_dir")" "$(site_creation_moment "$site_dir" "$run_dir")" "$(basename -- "$run_dir")" "$site_dir"
+            fi
+        done < <(find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 )
 
 printf 'Onvolledige backups zonder herstelwaarde:\n'
@@ -299,7 +435,7 @@ while IFS= read -r -d '' site_dir; do
     remove_directory "$site_dir" "onvolledig" || true
 done < <(
     while IFS= read -r -d '' run_dir; do
-        if ! run_is_ours "$run_dir"; then
+        if ! run_was_ours "$run_dir"; then
             continue
         fi
         find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null
@@ -309,47 +445,70 @@ if [ "$found_incomplete" = "0" ]; then
     printf '   geen\n'
 fi
 
-unproven=0
-while IFS= read -r -d '' run_dir; do
-    if run_is_ours "$run_dir"; then
+printf '\nHerstelpunten, per site blijven de %s nieuwste staan:\n' "$KEEP"
+found_old=0
+gelijkstand=0
+huidige_site=''
+teller=0
+grensvergelijking=''
+while IFS=$'\t' read -r site_id run_key run_moment run_naam site_dir; do
+    if [ -z "$site_id" ]; then
         continue
     fi
-    if [ "$unproven" = "0" ]; then
-        printf '\nOvergeslagen, geen bewijs dat deze mappen van wp2shell zijn:\n'
+    if [ "$site_id" != "$huidige_site" ]; then
+        huidige_site=$site_id
+        teller=0
+        grensvergelijking=''
     fi
-    unproven=1
-    printf '%-12s %6s MB  %s\n' "onbewezen" "$(($(directory_size_kilobytes "$run_dir") / 1024))" "$run_dir"
-done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
-if [ "$unproven" = "1" ]; then
-    printf 'Deze mappen zijn met rust gelaten. Backups van voor deze versie dragen nog\n'
-    printf 'geen markering; ruim die desgewenst handmatig op.\n'
-fi
-
-printf '\nVolledige backups, de %s nieuwste runs met een herstelpunt blijven staan:\n' "$KEEP"
-index=0
-found_old=0
-for run_dir in ${ordered_runs[@]+"${ordered_runs[@]}"}; do
-    index=$((index + 1))
-    if [ "$index" -le "$KEEP" ]; then
-        printf '%-12s %6s MB  %s\n' "behouden" "$(($(directory_size_kilobytes "$run_dir") / 1024))" "$run_dir"
+    teller=$((teller + 1))
+    if [ "$teller" -le "$KEEP" ]; then
+        printf '%-12s %6s MB  %s\n' "behouden" "$(($(directory_size_kilobytes "$site_dir") / 1024))" "$site_dir"
+        grensvergelijking="$run_key|$run_moment"
+        continue
+    fi
+    if [ -n "$grensvergelijking" ] && [ "$run_key|$run_moment" = "$grensvergelijking" ]; then
+        printf '%-12s %6s MB  %s\n' "gelijkstand" "$(($(directory_size_kilobytes "$site_dir") / 1024))" "$site_dir"
+        gelijkstand=1
         continue
     fi
     found_old=1
-    remove_directory "$run_dir" "verouderd" || true
-done
-if [ "${#ordered_runs[@]}" -eq 0 ]; then
-    printf '   let op: geen enkele run bevat een volledig herstelpunt\n'
+    remove_directory "$site_dir" "verouderd" || true
+done < <(printf '%s\n' ${geldige_punten[@]+"${geldige_punten[@]}"} \
+    | LC_ALL=C sort -t"$(printf '\t')" -k1,1 -k2,2r -k3,3nr -k4,4r -k5,5r)
+if [ "${#geldige_punten[@]}" -eq 0 ]; then
+    printf '   let op: er is geen enkel volledig herstelpunt gevonden\n'
 elif [ "$found_old" = "0" ]; then
-    printf '   geen verouderde runs\n'
+    printf '   geen verouderde herstelpunten\n'
+fi
+if [ "$gelijkstand" = "1" ]; then
+    printf 'Enkele herstelpunten hebben hetzelfde aanmaaktijdstip en zijn niet te ordenen.\n'
+    printf 'Die blijven allemaal staan, want willekeurig kiezen kan de nieuwste kosten.\n'
 fi
 
 if [ "$APPLY" = "1" ]; then
     while IFS= read -r -d '' run_dir; do
-        if ! run_is_ours "$run_dir"; then
+        if ! run_was_ours "$run_dir"; then
+            continue
+        fi
+        if find -P "$run_dir" -mindepth 1 -maxdepth 1 ! -name '.wp2shell-run' -print -quit 2>/dev/null | grep -q .; then
+            continue
+        fi
+        if [ -f "$run_dir/.wp2shell-run" ]; then
+            markering_inhoud=$(cat -- "$run_dir/.wp2shell-run" 2>/dev/null) || markering_inhoud=''
+            if [ -z "$markering_inhoud" ]; then
+                continue
+            fi
+            rm -f -- "$run_dir/.wp2shell-run" 2>/dev/null || continue
+            if rmdir -- "$run_dir" 2>/dev/null; then
+                continue
+            fi
+            printf '%s\n' "$markering_inhoud" > "$run_dir/.wp2shell-run" 2>/dev/null || true
+            chmod 0600 -- "$run_dir/.wp2shell-run" 2>/dev/null || true
+            printf 'De runmap %s kon niet verwijderd worden, de markering is teruggezet\n' "$run_dir" >&2
             continue
         fi
         rmdir -- "$run_dir" 2>/dev/null || true
-    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -empty -print0 2>/dev/null)
+    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 fi
 
 printf '\n'

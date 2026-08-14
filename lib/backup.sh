@@ -1,5 +1,6 @@
 WP2SHELL_BACKUP_LOADED=1
 WP2SHELL_BACKUP_RESERVED_DIRECTORY=""
+WP2SHELL_BACKUP_RESERVATION_SHORTFALL=0
 
 backup_root_for_run() {
     printf '%s/%s' "${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}" "${WP2SHELL_RUN_ID:-onbekend}"
@@ -273,6 +274,28 @@ backup_ledger_outstanding_kilobytes() {
     return 0
 }
 
+backup_ledger_write() {
+    local ledger=$1 bestaande=$2 nieuwe=$3
+    local tijdelijk
+    tijdelijk=$(mktemp "$ledger.XXXXXX" 2>/dev/null) || return 1
+    {
+        if [ -n "$bestaande" ]; then
+            printf '%s\n' "$bestaande"
+        fi
+        if [ -n "$nieuwe" ]; then
+            printf '%s\n' "$nieuwe"
+        fi
+    } > "$tijdelijk" 2>/dev/null || {
+        rm -f -- "$tijdelijk" 2>/dev/null || true
+        return 1
+    }
+    if ! mv -f -- "$tijdelijk" "$ledger" 2>/dev/null; then
+        rm -f -- "$tijdelijk" 2>/dev/null || true
+        return 1
+    fi
+    return 0
+}
+
 backup_ledger_without_directory() {
     local ledger=$1 skip_dir=$2
     local needed rest
@@ -321,10 +344,11 @@ backup_reserve_space() {
         flock -u 8
         exec 8>&-
         log_error "Onvoldoende ruimte na verrekening van gelijktijdige backups: $((free / 1024)) MB vrij, $((needed / 1024)) MB nodig"
-        return 1
+        WP2SHELL_BACKUP_RESERVATION_SHORTFALL=$free
+        return 2
     fi
     overig=$(backup_ledger_without_directory "$ledger" "$backup_dir")
-    if ! { [ -n "$overig" ] && printf '%s\n' "$overig"; printf '%s %s\n' "$needed" "$backup_dir"; } > "$ledger" 2>/dev/null; then
+    if ! backup_ledger_write "$ledger" "$overig" "$needed $backup_dir"; then
         flock -u 8
         exec 8>&-
         backup_reservation_unavailable "Kan het reserveringsgrootboek niet bijwerken"
@@ -351,11 +375,8 @@ backup_release_space() {
         return 0
     fi
     overig=$(backup_ledger_without_directory "$ledger" "$backup_dir")
-    if [ -n "$overig" ]; then
-        printf '%s\n' "$overig" > "$ledger" 2>/dev/null || true
-    else
-        : > "$ledger" 2>/dev/null || true
-    fi
+    backup_ledger_write "$ledger" "$overig" "" || \
+        log_warn "Kon het reserveringsgrootboek niet bijwerken bij het vrijgeven van $backup_dir"
     flock -u 8
     exec 8>&-
     return 0
@@ -394,7 +415,15 @@ backup_space_is_sufficient() {
     case $margin in
         ''|*[!0-9]*) margin=30 ;;
     esac
+    if [ "${#margin}" -gt 4 ] || [ "$margin" -gt 1000 ]; then
+        log_warn "De ingestelde marge van $margin procent is onbruikbaar, er wordt met 30 procent gerekend"
+        margin=30
+    fi
     local needed available site_size database_size=0
+    if ! backup_size_check_is_mandatory; then
+        log_warn "De ruimtecontrole staat uit voor $site_path, de backup gaat door zonder te toetsen of hij past"
+        return 0
+    fi
     site_size=$(backup_site_size_kilobytes "$site_path")
     if [ "$site_size" -eq 0 ]; then
         backup_report_unmeasurable "$site_path" "De omvang van de bestanden onder de docroot"
@@ -413,8 +442,23 @@ backup_space_is_sufficient() {
     fi
     needed=$(((site_size + database_size) + ((site_size + database_size) * margin / 100)))
     if [ "$available" -ge "$needed" ]; then
-        if backup_reserve_space "$needed" "$backup_dir"; then
+        local reserve_status=0
+        backup_reserve_space "$needed" "$backup_dir" || reserve_status=$?
+        if [ "$reserve_status" -eq 0 ]; then
             return 0
+        fi
+        if [ "$reserve_status" -eq 2 ]; then
+            record_finding \
+                "site=$site_path" \
+                "severity=$SEVERITY_HIGH" \
+                "confidence=$CONFIDENCE_HIGH" \
+                "category=backup-space-insufficient" \
+                "title=Te weinig schijfruimte voor een backup" \
+                "detail=Op de schijf staat genoeg vrij, maar gelijktijdig lopende backups van andere sites hebben die ruimte al nodig. Deze site is overgeslagen en niet gewijzigd, zodat de schijf niet volloopt terwijl de andere backups nog schrijven." \
+                "evidence=nog vrij te vergeven $((${WP2SHELL_BACKUP_RESERVATION_SHORTFALL:-0} / 1024)) MB, nodig $((needed / 1024)) MB, ruw beschikbaar $((available / 1024)) MB" \
+                "remediation=Draai deze site opnieuw als de andere backups klaar zijn, verlaag --parallel, of wijs met --backup-dir een locatie met meer ruimte aan." \
+                "action=skipped"
+            return 1
         fi
         record_finding \
             "site=$site_path" \

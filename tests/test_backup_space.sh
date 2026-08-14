@@ -35,12 +35,15 @@ expect_equal() {
 schrijf_herstelpunt() {
     local site_dir=$1 archief_bytes dump_bytes
     mkdir -p -- "$site_dir"
-    printf 'inhoud van een site\n' | gzip -c > "$site_dir/files.tar.gz"
+    mkdir -p -- "$site_dir/inhoud"
+    printf 'inhoud van een site\n' > "$site_dir/inhoud/index.php"
+    tar --create --gzip --file="$site_dir/files.tar.gz" --directory="$site_dir" inhoud 2>/dev/null
+    rm -rf -- "$site_dir/inhoud"
     printf 'CREATE TABLE wp_options (id int);\n' > "$site_dir/database.sql"
     archief_bytes=$(stat -c '%s' -- "$site_dir/files.tar.gz")
     dump_bytes=$(stat -c '%s' -- "$site_dir/database.sql")
-    printf '{"run_id":"x","files_archive_sha256":"aa","files_archive_bytes":%s,"database_dump_bytes":%s}\n' \
-        "$archief_bytes" "$dump_bytes" > "$site_dir/manifest.json"
+    printf '{"run_id":"x","created_at":"%s","files_archive_sha256":"aa","files_archive_bytes":%s,"database_dump_bytes":%s}\n' \
+        "${2:-2026-08-01T00:00:00Z}" "$archief_bytes" "$dump_bytes" > "$site_dir/manifest.json"
     return 0
 }
 
@@ -53,6 +56,15 @@ mkdir -p "$WP2SHELL_STATE_DIR"
 WP2SHELL_RUN_ID=testrun
 WP2SHELL_FINDINGS_FILE="$WORKROOT/findings.ndjson"
 : > "$WP2SHELL_FINDINGS_FILE"
+
+DFSHIM="$WORKROOT/dfshim"
+mkdir -p "$DFSHIM"
+cat > "$DFSHIM/df" <<'DFEOF'
+#!/bin/bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted\n'
+printf '/dev/nep 1000 999 1 100%% /\n'
+DFEOF
+chmod 0755 -- "$DFSHIM/df"
 
 DBSTUB="$WORKROOT/wp-dbsize"
 cat > "$DBSTUB" <<'DBEOF'
@@ -99,11 +111,13 @@ WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=30
 expect_true "een normale site komt door de ruimtecontrole" \
     "$(backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1 && printf 0 || printf 1)"
 
-WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=999999999
 : > "$WP2SHELL_FINDINGS_FILE"
 space_status=0
-backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1 || space_status=$?
-expect_equal "een onhaalbare marge blokkeert de backup" "1" "$space_status"
+(
+    PATH="$DFSHIM:$PATH"
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1
+) || space_status=$?
+expect_equal "een schijf die vol is blokkeert de backup" "1" "$space_status"
 tests_run=$((tests_run + 1))
 if grep -q '"category":"backup-space-insufficient"' "$WP2SHELL_FINDINGS_FILE"; then
     printf 'ok   het gebrek aan ruimte wordt als bevinding vastgelegd\n'
@@ -433,6 +447,21 @@ acquire_run_lock "$LOCKBEWIJS" >/dev/null 2>&1 || lockbewijs_status=1
 expect_equal "een bestaand bestand zonder markering wordt geweigerd als slot" "1" "$lockbewijs_status"
 expect_equal "de inhoud van dat bestand is onaangeroerd" "kostbare configuratie" "$(cat "$LOCKBEWIJS")"
 
+VALSTRIK="$WORKROOT/valstrik-slot"
+printf '123\ncritical-setting=yes\n' > "$VALSTRIK"
+valstrik_status=0
+acquire_run_lock "$VALSTRIK" >/dev/null 2>&1 || valstrik_status=1
+expect_equal "een klein bestand dat begint met cijfers maar meer bevat wordt geweigerd" "1" "$valstrik_status"
+expect_equal "de inhoud daarvan is onaangeroerd" "123
+critical-setting=yes" "$(cat "$VALSTRIK")"
+
+OUD_SLOT="$WORKROOT/oud-slot"
+printf '12345\n' > "$OUD_SLOT"
+oud_status=0
+acquire_run_lock "$OUD_SLOT" >/dev/null 2>&1 || oud_status=1
+expect_equal "een slot van de vorige versie wordt wel overgenomen" "0" "$oud_status"
+release_run_lock
+
 : > "$WP2SHELL_FINDINGS_FILE"
 onmeetbaar_status=0
 (
@@ -445,7 +474,7 @@ expect_equal "een onbekende databaseomvang blokkeert de backup niet" "0" "$onmee
 geschat_status=0
 (
     WP2SHELL_STATE_DIR="$WORKROOT/state"
-    WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=999999999
+    PATH="$DFSHIM:$PATH"
     backup_space_is_sufficient "$SITE" "$WORKROOT" "" >/dev/null 2>&1
 ) || geschat_status=$?
 expect_equal "bij te weinig ruimte wordt de schatting wel gemeld" "1" "$geschat_status"
@@ -470,6 +499,297 @@ uitgezet_status=0
     backup_space_is_sufficient "$SITE" "$WORKROOT" "" >/dev/null 2>&1
 ) || uitgezet_status=$?
 expect_equal "met de controle bewust uitgezet loopt het door" "0" "$uitgezet_status"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+uitgezet_krap=0
+(
+    WP2SHELL_BACKUP_REQUIRE_SIZE_CHECK=0
+    WP2SHELL_STATE_DIR="$WORKROOT/state"
+    PATH="$DFSHIM:$PATH"
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1
+) || uitgezet_krap=$?
+expect_equal "uitgezet betekent ook geen weigering bij een meetbare krappe site" "0" "$uitgezet_krap"
+
+ATOOM_STATE="$WORKROOT/atomair"
+mkdir -p "$ATOOM_STATE" "$WORKROOT/blijver" "$WORKROOT/vertrekker"
+(
+    WP2SHELL_STATE_DIR="$ATOOM_STATE"
+    backup_reset_reservations
+    printf '500 %s\n600 %s\n' "$WORKROOT/blijver" "$WORKROOT/vertrekker" > "$(backup_reservation_file)"
+    WP2SHELL_BACKUP_RESERVED_DIRECTORY="$WORKROOT/vertrekker"
+    backup_release_space
+)
+expect_equal "na vrijgave blijft de reservering van de andere worker staan" "1" \
+    "$(grep -c 'blijver' "$ATOOM_STATE/backup-reservering")"
+expect_equal "de vertrekkende reservering is verdwenen" "0" \
+    "$(grep -c 'vertrekker' "$ATOOM_STATE/backup-reservering")"
+expect_equal "er blijft geen tijdelijk grootboek achter" "0" \
+    "$(find "$ATOOM_STATE" -name 'backup-reservering.*' -not -name '*.lock' | wc -l | tr -d ' ')"
+
+GZIP_ROOT="$WORKROOT/gzip-stuk"
+mkdir -p "$GZIP_ROOT/20260813-120000-1"
+printf '{"tool":"wp2shell"}\n' > "$GZIP_ROOT/20260813-120000-1/.wp2shell-run"
+schrijf_herstelpunt "$GZIP_ROOT/20260813-120000-1/site1"
+GZIP_CONF="$WORKROOT/gzip.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GZIP_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GZIP_CONF"
+GZIP_SHIM="$WORKROOT/gzip-shim"
+mkdir -p "$GZIP_SHIM"
+printf '#!/bin/bash\nexit 127\n' > "$GZIP_SHIM/gzip"
+chmod 0755 -- "$GZIP_SHIM/gzip"
+gzip_status=0
+PATH="$GZIP_SHIM:$PATH" WP2SHELL_CONFIG_FILE="$GZIP_CONF" \
+    "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || gzip_status=$?
+expect_equal "een gzip die niet werkt stopt het opruimen" "2" "$gzip_status"
+expect_equal "het herstelpunt is niet verwijderd" "aanwezig" \
+    "$([ -f "$GZIP_ROOT/20260813-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
+: > "$WP2SHELL_FINDINGS_FILE"
+KRAP_STATE="$WORKROOT/krapte"
+mkdir -p "$KRAP_STATE" "$WORKROOT/andere-worker"
+krapte_status=0
+(
+    WP2SHELL_STATE_DIR="$KRAP_STATE"
+    backup_reset_reservations
+    beschikbaar=$(backup_available_kilobytes "$WORKROOT")
+    printf '%s %s\n' "$((beschikbaar - 10))" "$WORKROOT/andere-worker" > "$(backup_reservation_file)"
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1
+) || krapte_status=$?
+expect_equal "krapte door gelijktijdige backups slaat de site over" "1" "$krapte_status"
+tests_run=$((tests_run + 1))
+if grep -q '"category":"backup-space-insufficient"' "$WP2SHELL_FINDINGS_FILE"; then
+    printf 'ok   krapte wordt als ruimtegebrek gemeld en niet als grootboekprobleem\n'
+else
+    printf 'FAIL krapte wordt verkeerd gerapporteerd\n' >&2
+    tests_failed=$((tests_failed + 1))
+fi
+tests_run=$((tests_run + 1))
+if grep -q '"category":"backup-reservation-unavailable"' "$WP2SHELL_FINDINGS_FILE"; then
+    printf 'FAIL krapte wordt ten onrechte als grootboekprobleem gemeld\n' >&2
+    tests_failed=$((tests_failed + 1))
+else
+    printf 'ok   er wordt niet ten onrechte naar de state-map verwezen\n'
+fi
+
+marge_status=0
+(
+    WP2SHELL_STATE_DIR="$WORKROOT/state"
+    WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=999999999999999999
+    backup_space_is_sufficient "$SITE" "$WORKROOT" "$EIGENAAR" >/dev/null 2>&1
+) || marge_status=$?
+expect_equal "een absurde marge laat de backup niet zomaar door" "0" "$marge_status"
+
+PERSITE_ROOT="$WORKROOT/per-site"
+mkdir -p "$PERSITE_ROOT/20260801-120000-1" "$PERSITE_ROOT/20260810-120000-2" "$PERSITE_ROOT/20260813-120000-3"
+for run in 20260801-120000-1 20260810-120000-2 20260813-120000-3; do
+    printf '{"tool":"wp2shell"}\n' > "$PERSITE_ROOT/$run/.wp2shell-run"
+done
+schrijf_herstelpunt "$PERSITE_ROOT/20260801-120000-1/site-b"
+schrijf_herstelpunt "$PERSITE_ROOT/20260810-120000-2/site-a"
+schrijf_herstelpunt "$PERSITE_ROOT/20260813-120000-3/site-a"
+PERSITE_CONF="$WORKROOT/per-site.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$PERSITE_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$PERSITE_CONF"
+WP2SHELL_CONFIG_FILE="$PERSITE_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "de enige backup van site b overleeft twee nieuwere runs zonder site b" "aanwezig" \
+    "$([ -f "$PERSITE_ROOT/20260801-120000-1/site-b/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "van site a blijft alleen de nieuwste staan" "aanwezig" \
+    "$([ -f "$PERSITE_ROOT/20260813-120000-3/site-a/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de oudere backup van site a is opgeruimd" "weg" \
+    "$([ -d "$PERSITE_ROOT/20260810-120000-2/site-a" ] && printf 'aanwezig' || printf 'weg')"
+
+TIJDSTIP_ROOT="$WORKROOT/tijdstip"
+mkdir -p "$TIJDSTIP_ROOT/20260801-120000-1" "$TIJDSTIP_ROOT/20260813-120000-2"
+printf '{"tool":"wp2shell"}\n' > "$TIJDSTIP_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$TIJDSTIP_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$TIJDSTIP_ROOT/20260801-120000-1/site1"
+schrijf_herstelpunt "$TIJDSTIP_ROOT/20260813-120000-2/site1"
+touch -d '2026-08-20' "$TIJDSTIP_ROOT/20260801-120000-1"
+touch -d '2026-08-02' "$TIJDSTIP_ROOT/20260813-120000-2"
+TIJDSTIP_CONF="$WORKROOT/tijdstip.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$TIJDSTIP_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$TIJDSTIP_CONF"
+WP2SHELL_CONFIG_FILE="$TIJDSTIP_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een aangeraakte mtime verandert de volgorde niet, de run-id telt" "aanwezig" \
+    "$([ -f "$TIJDSTIP_ROOT/20260813-120000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
+EIGENNAAM_ROOT="$WORKROOT/eigen-run-id"
+mkdir -p "$EIGENNAAM_ROOT/handmatig" "$EIGENNAAM_ROOT/20260813-120000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T10:00:00Z"}\n' > "$EIGENNAAM_ROOT/handmatig/.wp2shell-run"
+printf '{"tool":"wp2shell","created_at":"2026-08-13T10:00:00Z"}\n' > "$EIGENNAAM_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$EIGENNAAM_ROOT/handmatig/site1"
+schrijf_herstelpunt "$EIGENNAAM_ROOT/20260813-120000-2/site1"
+EIGENNAAM_CONF="$WORKROOT/eigen-run-id.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$EIGENNAAM_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$EIGENNAAM_CONF"
+eigennaam_status=0
+WP2SHELL_CONFIG_FILE="$EIGENNAAM_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || eigennaam_status=$?
+expect_equal "een run met een eigen run-id blokkeert het opruimen niet" "0" "$eigennaam_status"
+expect_equal "de markering bepaalt de volgorde, niet de mapnaam" "aanwezig" \
+    "$([ -f "$EIGENNAAM_ROOT/20260813-120000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de oudere run met eigen naam is opgeruimd" "weg" \
+    "$([ -d "$EIGENNAAM_ROOT/handmatig/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+DUBBEL_ROOT="$WORKROOT/dubbeltelling"
+mkdir -p "$DUBBEL_ROOT/20260801-120000-1/site-onvolledig" "$DUBBEL_ROOT/20260813-120000-2"
+printf '{"tool":"wp2shell"}\n' > "$DUBBEL_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$DUBBEL_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$DUBBEL_ROOT/20260801-120000-1/site1"
+schrijf_herstelpunt "$DUBBEL_ROOT/20260813-120000-2/site1"
+head -c 2000000 /dev/zero > "$DUBBEL_ROOT/20260801-120000-1/site-onvolledig/files.tar.gz"
+DUBBEL_CONF="$WORKROOT/dubbel.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$DUBBEL_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$DUBBEL_CONF"
+droog=$(WP2SHELL_CONFIG_FILE="$DUBBEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --keep 1 --lock-file "$WORKROOT/test.lock" 2>/dev/null | sed -n 's/.*zouden verwijderd worden, samen \([0-9]*\) MB/\1/p')
+echt=$(WP2SHELL_CONFIG_FILE="$DUBBEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" 2>/dev/null | sed -n 's/.*mappen verwijderd, \([0-9]*\) MB teruggewonnen/\1/p')
+expect_equal "de droge run schat evenveel als er werkelijk vrijkomt" "$echt" "$droog"
+
+NEPTAR_ROOT="$WORKROOT/neparchief"
+mkdir -p "$NEPTAR_ROOT/20260801-120000-1" "$NEPTAR_ROOT/20260813-120000-2/site1"
+printf '{"tool":"wp2shell"}\n' > "$NEPTAR_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$NEPTAR_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$NEPTAR_ROOT/20260801-120000-1/site1"
+head -c 5000 /dev/urandom | gzip -c > "$NEPTAR_ROOT/20260813-120000-2/site1/files.tar.gz"
+printf 'CREATE TABLE wp_options (id int);\n' > "$NEPTAR_ROOT/20260813-120000-2/site1/database.sql"
+printf '{"files_archive_bytes":%s,"database_dump_bytes":%s}\n' \
+    "$(stat -c '%s' -- "$NEPTAR_ROOT/20260813-120000-2/site1/files.tar.gz")" \
+    "$(stat -c '%s' -- "$NEPTAR_ROOT/20260813-120000-2/site1/database.sql")" \
+    > "$NEPTAR_ROOT/20260813-120000-2/site1/manifest.json"
+NEPTAR_CONF="$WORKROOT/neparchief.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$NEPTAR_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$NEPTAR_CONF"
+WP2SHELL_CONFIG_FILE="$NEPTAR_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een gzip zonder tar erin telt niet als herstelpunt" "weg" \
+    "$([ -d "$NEPTAR_ROOT/20260813-120000-2/site1" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de geldige oudere backup blijft daardoor staan" "aanwezig" \
+    "$([ -f "$NEPTAR_ROOT/20260801-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
+GEMENGD_ROOT="$WORKROOT/gemengd"
+mkdir -p "$GEMENGD_ROOT/20260813-120000-1" "$GEMENGD_ROOT/20260814-090000-2"
+schrijf_herstelpunt "$GEMENGD_ROOT/20260813-120000-1/site1"
+schrijf_herstelpunt "$GEMENGD_ROOT/20260814-090000-2/site1"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$GEMENGD_ROOT/20260814-090000-2/.wp2shell-run"
+GEMENGD_CONF="$WORKROOT/gemengd.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GEMENGD_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GEMENGD_CONF"
+WP2SHELL_CONFIG_FILE="$GEMENGD_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "in een gemengde boom overleeft het nieuwste herstelpunt" "aanwezig" \
+    "$([ -f "$GEMENGD_ROOT/20260814-090000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "en het oudere zonder markering wordt opgeruimd" "weg" \
+    "$([ -d "$GEMENGD_ROOT/20260813-120000-1/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+GELIJK_ROOT="$WORKROOT/zelfde-seconde"
+mkdir -p "$GELIJK_ROOT/20260814-090000-100" "$GELIJK_ROOT/20260814-090000-101"
+for run in 20260814-090000-100 20260814-090000-101; do
+    printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$GELIJK_ROOT/$run/.wp2shell-run"
+    schrijf_herstelpunt "$GELIJK_ROOT/$run/site1"
+done
+GELIJK_CONF="$WORKROOT/zelfde-seconde.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GELIJK_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GELIJK_CONF"
+WP2SHELL_CONFIG_FILE="$GELIJK_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "bij een gelijk tijdstip wint de laatst gestarte run" "aanwezig" \
+    "$([ -f "$GELIJK_ROOT/20260814-090000-101/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "en de eerder gestarte wordt opgeruimd" "weg" \
+    "$([ -d "$GELIJK_ROOT/20260814-090000-100/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+ROMMEL_ROOT="$WORKROOT/rommel"
+mkdir -p "$ROMMEL_ROOT/eigennaam" "$ROMMEL_ROOT/20260814-090000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T09:00:00Z"}\n' > "$ROMMEL_ROOT/eigennaam/.wp2shell-run"
+printf 'rommel\n' > "$ROMMEL_ROOT/eigennaam/los-bestand"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$ROMMEL_ROOT/20260814-090000-2/.wp2shell-run"
+schrijf_herstelpunt "$ROMMEL_ROOT/20260814-090000-2/site1"
+ROMMEL_CONF="$WORKROOT/rommel.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$ROMMEL_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$ROMMEL_CONF"
+WP2SHELL_CONFIG_FILE="$ROMMEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een runmap met los bestand houdt zijn markering" "aanwezig" \
+    "$([ -f "$ROMMEL_ROOT/eigennaam/.wp2shell-run" ] && printf 'aanwezig' || printf 'weg')"
+rommel_status=0
+WP2SHELL_CONFIG_FILE="$ROMMEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || rommel_status=$?
+expect_equal "de boom blijft daardoor bruikbaar bij een volgende run" "0" "$rommel_status"
+
+LEEG_ROOT="$WORKROOT/lege-eigennaam"
+mkdir -p "$LEEG_ROOT/handmatig" "$LEEG_ROOT/20260814-090000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T09:00:00Z"}\n' > "$LEEG_ROOT/handmatig/.wp2shell-run"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$LEEG_ROOT/20260814-090000-2/.wp2shell-run"
+schrijf_herstelpunt "$LEEG_ROOT/20260814-090000-2/site1"
+LEEG_CONF="$WORKROOT/lege-eigennaam.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$LEEG_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$LEEG_CONF"
+WP2SHELL_CONFIG_FILE="$LEEG_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een runmap met alleen een markering wordt wel opgeruimd" "weg" \
+    "$([ -d "$LEEG_ROOT/handmatig" ] && printf 'aanwezig' || printf 'weg')"
+
+CHRONO_ROOT="$WORKROOT/chronologie"
+mkdir -p "$CHRONO_ROOT/z-oud" "$CHRONO_ROOT/a-nieuw"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$CHRONO_ROOT/z-oud/.wp2shell-run"
+schrijf_herstelpunt "$CHRONO_ROOT/z-oud/site1"
+sleep 0.2
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$CHRONO_ROOT/a-nieuw/.wp2shell-run"
+schrijf_herstelpunt "$CHRONO_ROOT/a-nieuw/site1"
+CHRONO_CONF="$WORKROOT/chronologie.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$CHRONO_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$CHRONO_CONF"
+WP2SHELL_CONFIG_FILE="$CHRONO_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "bij eigen namen in dezelfde seconde telt het echte aanmaakmoment" "aanwezig" \
+    "$([ -f "$CHRONO_ROOT/a-nieuw/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de eerder aangemaakte run wordt opgeruimd ondanks zijn latere naam" "weg" \
+    "$([ -d "$CHRONO_ROOT/z-oud/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+STAART="$WORKROOT/slot-met-staart"
+printf '123\n\n' > "$STAART"
+staart_status=0
+acquire_run_lock "$STAART" >/dev/null 2>&1 || staart_status=1
+expect_equal "een slot met een extra lege regel wordt geweigerd" "1" "$staart_status"
+expect_equal "de grootte daarvan is onveranderd" "5" "$(stat -c '%s' -- "$STAART")"
+
+OUDRUN_ROOT="$WORKROOT/oude-run-zonder-markering"
+mkdir -p "$OUDRUN_ROOT/20260801-120000-1" "$OUDRUN_ROOT/20260814-090000-2"
+schrijf_herstelpunt "$OUDRUN_ROOT/20260801-120000-1/site1"
+schrijf_herstelpunt "$OUDRUN_ROOT/20260814-090000-2/site1"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$OUDRUN_ROOT/20260814-090000-2/.wp2shell-run"
+OUDRUN_CONF="$WORKROOT/oude-run.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$OUDRUN_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$OUDRUN_CONF"
+WP2SHELL_CONFIG_FILE="$OUDRUN_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een run zonder markering laat na het opruimen geen lege map achter" "weg" \
+    "$([ -d "$OUDRUN_ROOT/20260801-120000-1" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "het nieuwste herstelpunt blijft daarbij staan" "aanwezig" \
+    "$([ -f "$OUDRUN_ROOT/20260814-090000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
+HERGEBRUIK_ROOT="$WORKROOT/hergebruikte-run"
+mkdir -p "$HERGEBRUIK_ROOT/oude-run" "$HERGEBRUIK_ROOT/20260810-120000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T09:00:00Z"}\n' > "$HERGEBRUIK_ROOT/oude-run/.wp2shell-run"
+printf '{"tool":"wp2shell","created_at":"2026-08-10T09:00:00Z"}\n' > "$HERGEBRUIK_ROOT/20260810-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$HERGEBRUIK_ROOT/20260810-120000-2/site1" "2026-08-10T12:00:00Z"
+schrijf_herstelpunt "$HERGEBRUIK_ROOT/oude-run/site1" "2026-08-14T12:00:00Z"
+HERGEBRUIK_CONF="$WORKROOT/hergebruik.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$HERGEBRUIK_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$HERGEBRUIK_CONF"
+WP2SHELL_CONFIG_FILE="$HERGEBRUIK_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een nieuwere backup in een hergebruikte oude run blijft staan" "aanwezig" \
+    "$([ -f "$HERGEBRUIK_ROOT/oude-run/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de oudere backup uit de nieuwere run wordt opgeruimd" "weg" \
+    "$([ -d "$HERGEBRUIK_ROOT/20260810-120000-2/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+GELIJKSTAND_ROOT="$WORKROOT/gelijkstand"
+mkdir -p "$GELIJKSTAND_ROOT/z-oud" "$GELIJKSTAND_ROOT/a-nieuw"
+for run in z-oud a-nieuw; do
+    printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$GELIJKSTAND_ROOT/$run/.wp2shell-run"
+    schrijf_herstelpunt "$GELIJKSTAND_ROOT/$run/site1" "2026-08-14T09:00:00Z"
+done
+touch -d '2026-08-14 09:00:00' "$GELIJKSTAND_ROOT/z-oud/site1/manifest.json" \
+    "$GELIJKSTAND_ROOT/a-nieuw/site1/manifest.json"
+GELIJKSTAND_CONF="$WORKROOT/gelijkstand.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$GELIJKSTAND_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$GELIJKSTAND_CONF"
+WP2SHELL_CONFIG_FILE="$GELIJKSTAND_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "bij een onbesliste gelijkstand blijft het ene herstelpunt staan" "aanwezig" \
+    "$([ -d "$GELIJKSTAND_ROOT/z-oud/site1" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "en het andere ook" "aanwezig" \
+    "$([ -d "$GELIJKSTAND_ROOT/a-nieuw/site1" ] && printf 'aanwezig' || printf 'weg')"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
