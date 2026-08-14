@@ -81,7 +81,7 @@ if [ ! -d "$BACKUP_ROOT" ]; then
     exit 1
 fi
 
-for benodigd in gzip du df find stat grep sed; do
+for benodigd in tar gzip du df find stat grep sed mktemp; do
     if ! command -v "$benodigd" >/dev/null 2>&1; then
         printf 'Het commando %s ontbreekt. Zonder dat commando is niet vast te stellen of\n' "$benodigd" >&2
         printf 'een backup bruikbaar is, en dan zou elke backup als onbruikbaar gelden en\n' >&2
@@ -89,6 +89,28 @@ for benodigd in gzip du df find stat grep sed; do
         exit 2
     fi
 done
+
+archiefcontrole_werkt() {
+    local proefmap resultaat=0
+    proefmap=$(mktemp -d) || return 1
+    mkdir -p -- "$proefmap/inhoud" 2>/dev/null || resultaat=1
+    printf 'proef\n' > "$proefmap/inhoud/bestand" 2>/dev/null || resultaat=1
+    if [ "$resultaat" -eq 0 ]; then
+        tar --create --gzip --file="$proefmap/proef.tar.gz" --directory="$proefmap" inhoud 2>/dev/null || resultaat=1
+    fi
+    if [ "$resultaat" -eq 0 ]; then
+        tar --list --file="$proefmap/proef.tar.gz" >/dev/null 2>&1 || resultaat=1
+    fi
+    rm -rf -- "$proefmap" 2>/dev/null || true
+    return "$resultaat"
+}
+
+if ! archiefcontrole_werkt; then
+    printf 'Een zelfgemaakt proefarchief kon niet gelezen worden, dus tar of gzip werkt hier\n' >&2
+    printf 'niet naar behoren. Elke geldige backup zou dan als onbruikbaar gelden en\n' >&2
+    printf 'verwijderd worden. Er is niets verwijderd.\n' >&2
+    exit 2
+fi
 
 backup_root_is_trustworthy() {
     local root=$1 resolved entry base depth
@@ -290,14 +312,7 @@ manifest_is_complete() {
     if ! grep -q -m1 -i 'CREATE TABLE' -- "$dump" 2>/dev/null; then
         return 1
     fi
-    local gzip_status=0
-    gzip -t -- "$archive" 2>/dev/null || gzip_status=$?
-    if [ "$gzip_status" -ge 126 ]; then
-        printf 'gzip kon niet uitgevoerd worden (exitcode %s). Zonder die controle is niet\n' "$gzip_status" >&2
-        printf 'vast te stellen of een backup bruikbaar is. Er is niets verwijderd.\n' >&2
-        exit 2
-    fi
-    if [ "$gzip_status" -ne 0 ]; then
+    if ! tar --list --file="$archive" >/dev/null 2>&1; then
         return 1
     fi
     return 0

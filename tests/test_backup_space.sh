@@ -35,7 +35,10 @@ expect_equal() {
 schrijf_herstelpunt() {
     local site_dir=$1 archief_bytes dump_bytes
     mkdir -p -- "$site_dir"
-    printf 'inhoud van een site\n' | gzip -c > "$site_dir/files.tar.gz"
+    mkdir -p -- "$site_dir/inhoud"
+    printf 'inhoud van een site\n' > "$site_dir/inhoud/index.php"
+    tar --create --gzip --file="$site_dir/files.tar.gz" --directory="$site_dir" inhoud 2>/dev/null
+    rm -rf -- "$site_dir/inhoud"
     printf 'CREATE TABLE wp_options (id int);\n' > "$site_dir/database.sql"
     archief_bytes=$(stat -c '%s' -- "$site_dir/files.tar.gz")
     dump_bytes=$(stat -c '%s' -- "$site_dir/database.sql")
@@ -640,6 +643,26 @@ droog=$(WP2SHELL_CONFIG_FILE="$DUBBEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" 
 echt=$(WP2SHELL_CONFIG_FILE="$DUBBEL_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
     --apply --keep 1 --lock-file "$WORKROOT/test.lock" 2>/dev/null | sed -n 's/.*mappen verwijderd, \([0-9]*\) MB teruggewonnen/\1/p')
 expect_equal "de droge run schat evenveel als er werkelijk vrijkomt" "$echt" "$droog"
+
+NEPTAR_ROOT="$WORKROOT/neparchief"
+mkdir -p "$NEPTAR_ROOT/20260801-120000-1" "$NEPTAR_ROOT/20260813-120000-2/site1"
+printf '{"tool":"wp2shell"}\n' > "$NEPTAR_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$NEPTAR_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$NEPTAR_ROOT/20260801-120000-1/site1"
+head -c 5000 /dev/urandom | gzip -c > "$NEPTAR_ROOT/20260813-120000-2/site1/files.tar.gz"
+printf 'CREATE TABLE wp_options (id int);\n' > "$NEPTAR_ROOT/20260813-120000-2/site1/database.sql"
+printf '{"files_archive_bytes":%s,"database_dump_bytes":%s}\n' \
+    "$(stat -c '%s' -- "$NEPTAR_ROOT/20260813-120000-2/site1/files.tar.gz")" \
+    "$(stat -c '%s' -- "$NEPTAR_ROOT/20260813-120000-2/site1/database.sql")" \
+    > "$NEPTAR_ROOT/20260813-120000-2/site1/manifest.json"
+NEPTAR_CONF="$WORKROOT/neparchief.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$NEPTAR_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$NEPTAR_CONF"
+WP2SHELL_CONFIG_FILE="$NEPTAR_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een gzip zonder tar erin telt niet als herstelpunt" "weg" \
+    "$([ -d "$NEPTAR_ROOT/20260813-120000-2/site1" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de geldige oudere backup blijft daardoor staan" "aanwezig" \
+    "$([ -f "$NEPTAR_ROOT/20260801-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
