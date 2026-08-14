@@ -242,6 +242,18 @@ normaliseer_tijdsleutel() {
     return 0
 }
 
+run_creation_moment() {
+    local run_dir=$1 moment=''
+    if [ -f "$run_dir/.wp2shell-run" ]; then
+        moment=$(stat -c '%.9Y' -- "$run_dir/.wp2shell-run" 2>/dev/null) || moment=''
+    fi
+    case ${moment:-} in
+        ''|*[!0-9.]*) moment=0 ;;
+    esac
+    printf '%s' "$moment"
+    return 0
+}
+
 run_sort_key() {
     local run_dir=$1 stempel='' naam
     if [ -f "$run_dir/.wp2shell-run" ]; then
@@ -361,7 +373,7 @@ done < <(
         fi
         while IFS= read -r -d '' site_dir; do
             if site_has_recovery_point "$site_dir"; then
-                printf '%s\t%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(run_sort_key "$run_dir")" "$(basename -- "$run_dir")" "$site_dir"
+                printf '%s\t%s\t%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(run_sort_key "$run_dir")" "$(run_creation_moment "$run_dir")" "$(basename -- "$run_dir")" "$site_dir"
             fi
         done < <(find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
     done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
@@ -391,7 +403,7 @@ printf '\nHerstelpunten, per site blijven de %s nieuwste staan:\n' "$KEEP"
 found_old=0
 huidige_site=''
 teller=0
-while IFS=$'\t' read -r site_id run_key run_naam site_dir; do
+while IFS=$'\t' read -r site_id run_key run_moment run_naam site_dir; do
     if [ -z "$site_id" ]; then
         continue
     fi
@@ -407,7 +419,7 @@ while IFS=$'\t' read -r site_id run_key run_naam site_dir; do
     found_old=1
     remove_directory "$site_dir" "verouderd" || true
 done < <(printf '%s\n' ${geldige_punten[@]+"${geldige_punten[@]}"} \
-    | LC_ALL=C sort -t"$(printf '\t')" -k1,1 -k2,2r -k3,3r -k4,4r)
+    | LC_ALL=C sort -t"$(printf '\t')" -k1,1 -k2,2r -k3,3nr -k4,4r -k5,5r)
 if [ "${#geldige_punten[@]}" -eq 0 ]; then
     printf '   let op: er is geen enkel volledig herstelpunt gevonden\n'
 elif [ "$found_old" = "0" ]; then

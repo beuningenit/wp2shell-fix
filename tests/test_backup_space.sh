@@ -722,6 +722,29 @@ WP2SHELL_CONFIG_FILE="$LEEG_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
 expect_equal "een runmap met alleen een markering wordt wel opgeruimd" "weg" \
     "$([ -d "$LEEG_ROOT/handmatig" ] && printf 'aanwezig' || printf 'weg')"
 
+CHRONO_ROOT="$WORKROOT/chronologie"
+mkdir -p "$CHRONO_ROOT/z-oud" "$CHRONO_ROOT/a-nieuw"
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$CHRONO_ROOT/z-oud/.wp2shell-run"
+schrijf_herstelpunt "$CHRONO_ROOT/z-oud/site1"
+sleep 0.2
+printf '{"tool":"wp2shell","created_at":"2026-08-14T09:00:00Z"}\n' > "$CHRONO_ROOT/a-nieuw/.wp2shell-run"
+schrijf_herstelpunt "$CHRONO_ROOT/a-nieuw/site1"
+CHRONO_CONF="$WORKROOT/chronologie.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$CHRONO_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$CHRONO_CONF"
+WP2SHELL_CONFIG_FILE="$CHRONO_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "bij eigen namen in dezelfde seconde telt het echte aanmaakmoment" "aanwezig" \
+    "$([ -f "$CHRONO_ROOT/a-nieuw/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de eerder aangemaakte run wordt opgeruimd ondanks zijn latere naam" "weg" \
+    "$([ -d "$CHRONO_ROOT/z-oud/site1" ] && printf 'aanwezig' || printf 'weg')"
+
+STAART="$WORKROOT/slot-met-staart"
+printf '123\n\n' > "$STAART"
+staart_status=0
+acquire_run_lock "$STAART" >/dev/null 2>&1 || staart_status=1
+expect_equal "een slot met een extra lege regel wordt geweigerd" "1" "$staart_status"
+expect_equal "de grootte daarvan is onveranderd" "5" "$(stat -c '%s' -- "$STAART")"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1

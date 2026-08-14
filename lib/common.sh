@@ -425,7 +425,11 @@ lock_path_is_acceptable() {
         case $volledig in
             *$'\n'*) : ;;
             ''|*[!0-9]*) : ;;
-            *) return 0 ;;
+            *)
+                if [ "$size" -eq "${#volledig}" ] || [ "$size" -eq "$((${#volledig} + 1))" ]; then
+                    return 0
+                fi
+                ;;
         esac
     fi
     log_error "Het opgegeven bestand is geen lockbestand van wp2shell en wordt niet aangeraakt: $lock_path"
