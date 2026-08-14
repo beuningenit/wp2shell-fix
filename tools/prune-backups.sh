@@ -254,6 +254,35 @@ run_creation_moment() {
     return 0
 }
 
+site_sort_key() {
+    local site_dir=$1 run_dir=$2 stempel=''
+    if [ -f "$site_dir/manifest.json" ]; then
+        stempel=$(sed -n 's/.*"created_at":"\([^"]*\)".*/\1/p' -- "$site_dir/manifest.json" 2>/dev/null | head -1) || stempel=''
+    fi
+    if [ -n "$stempel" ]; then
+        normaliseer_tijdsleutel "$stempel"
+        return 0
+    fi
+    run_sort_key "$run_dir"
+    return 0
+}
+
+site_creation_moment() {
+    local site_dir=$1 run_dir=$2 moment=''
+    if [ -f "$site_dir/manifest.json" ]; then
+        moment=$(stat -c '%.9Y' -- "$site_dir/manifest.json" 2>/dev/null) || moment=''
+    fi
+    case ${moment:-} in
+        ''|*[!0-9.]*) moment='' ;;
+    esac
+    if [ -n "$moment" ]; then
+        printf '%s' "$moment"
+        return 0
+    fi
+    run_creation_moment "$run_dir"
+    return 0
+}
+
 run_sort_key() {
     local run_dir=$1 stempel='' naam
     if [ -f "$run_dir/.wp2shell-run" ]; then
@@ -390,7 +419,7 @@ done < <(
         fi
         while IFS= read -r -d '' site_dir; do
             if site_has_recovery_point "$site_dir"; then
-                printf '%s\t%s\t%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(run_sort_key "$run_dir")" "$(run_creation_moment "$run_dir")" "$(basename -- "$run_dir")" "$site_dir"
+                printf '%s\t%s\t%s\t%s\t%s\n' "$(basename -- "$site_dir")" "$(site_sort_key "$site_dir" "$run_dir")" "$(site_creation_moment "$site_dir" "$run_dir")" "$(basename -- "$run_dir")" "$site_dir"
             fi
         done < <(find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
     done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)

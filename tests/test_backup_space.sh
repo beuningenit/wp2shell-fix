@@ -42,8 +42,8 @@ schrijf_herstelpunt() {
     printf 'CREATE TABLE wp_options (id int);\n' > "$site_dir/database.sql"
     archief_bytes=$(stat -c '%s' -- "$site_dir/files.tar.gz")
     dump_bytes=$(stat -c '%s' -- "$site_dir/database.sql")
-    printf '{"run_id":"x","files_archive_sha256":"aa","files_archive_bytes":%s,"database_dump_bytes":%s}\n' \
-        "$archief_bytes" "$dump_bytes" > "$site_dir/manifest.json"
+    printf '{"run_id":"x","created_at":"%s","files_archive_sha256":"aa","files_archive_bytes":%s,"database_dump_bytes":%s}\n' \
+        "${2:-2026-08-01T00:00:00Z}" "$archief_bytes" "$dump_bytes" > "$site_dir/manifest.json"
     return 0
 }
 
@@ -758,6 +758,21 @@ expect_equal "een run zonder markering laat na het opruimen geen lege map achter
     "$([ -d "$OUDRUN_ROOT/20260801-120000-1" ] && printf 'aanwezig' || printf 'weg')"
 expect_equal "het nieuwste herstelpunt blijft daarbij staan" "aanwezig" \
     "$([ -f "$OUDRUN_ROOT/20260814-090000-2/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
+HERGEBRUIK_ROOT="$WORKROOT/hergebruikte-run"
+mkdir -p "$HERGEBRUIK_ROOT/oude-run" "$HERGEBRUIK_ROOT/20260810-120000-2"
+printf '{"tool":"wp2shell","created_at":"2026-08-01T09:00:00Z"}\n' > "$HERGEBRUIK_ROOT/oude-run/.wp2shell-run"
+printf '{"tool":"wp2shell","created_at":"2026-08-10T09:00:00Z"}\n' > "$HERGEBRUIK_ROOT/20260810-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$HERGEBRUIK_ROOT/20260810-120000-2/site1" "2026-08-10T12:00:00Z"
+schrijf_herstelpunt "$HERGEBRUIK_ROOT/oude-run/site1" "2026-08-14T12:00:00Z"
+HERGEBRUIK_CONF="$WORKROOT/hergebruik.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$HERGEBRUIK_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$HERGEBRUIK_CONF"
+WP2SHELL_CONFIG_FILE="$HERGEBRUIK_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
+    --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een nieuwere backup in een hergebruikte oude run blijft staan" "aanwezig" \
+    "$([ -f "$HERGEBRUIK_ROOT/oude-run/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+expect_equal "de oudere backup uit de nieuwere run wordt opgeruimd" "weg" \
+    "$([ -d "$HERGEBRUIK_ROOT/20260810-120000-2/site1" ] && printf 'aanwezig' || printf 'weg')"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
