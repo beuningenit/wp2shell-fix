@@ -389,21 +389,68 @@ install_cleanup_trap() {
     return 0
 }
 
+WP2SHELL_LOCK_MARKER="wp2shell-lock"
+
+lock_path_is_acceptable() {
+    local lock_path=$1 size first=''
+    if [ -L "$lock_path" ]; then
+        log_error "Het lockbestand is een symlink en wordt niet gevolgd: $lock_path"
+        return 1
+    fi
+    if [ -d "$lock_path" ]; then
+        log_error "Het lockbestand is een map: $lock_path"
+        return 1
+    fi
+    if [ ! -e "$lock_path" ]; then
+        return 0
+    fi
+    if [ ! -f "$lock_path" ]; then
+        log_error "Het lockbestand is geen gewoon bestand: $lock_path"
+        return 1
+    fi
+    size=$(stat -c '%s' -- "$lock_path" 2>/dev/null) || size=0
+    case $size in
+        ''|*[!0-9]*) size=0 ;;
+    esac
+    if [ "$size" -eq 0 ]; then
+        return 0
+    fi
+    read -r first < "$lock_path" 2>/dev/null || first=''
+    if [ "$first" = "$WP2SHELL_LOCK_MARKER" ]; then
+        return 0
+    fi
+    case $first in
+        ''|*[!0-9]*) : ;;
+        *)
+            if [ "$size" -le 32 ]; then
+                return 0
+            fi
+            ;;
+    esac
+    log_error "Het opgegeven bestand is geen lockbestand van wp2shell en wordt niet aangeraakt: $lock_path"
+    return 1
+}
+
 acquire_run_lock() {
     local lock_path=$1
     mkdir -p -- "$(dirname -- "$lock_path")" 2>/dev/null || true
+    if ! lock_path_is_acceptable "$lock_path"; then
+        return 1
+    fi
     if [ "${WP2SHELL_HAS_FLOCK:-0}" != "1" ]; then
         log_warn "flock ontbreekt, gelijktijdige uitvoering wordt niet afgedwongen"
         return 0
     fi
-    if ! exec {WP2SHELL_LOCK_FD}>"$lock_path"; then
+    if ! exec {WP2SHELL_LOCK_FD}>>"$lock_path"; then
         log_error "Kan lockbestand niet openen: $lock_path"
         return 1
     fi
     if ! flock -n "$WP2SHELL_LOCK_FD"; then
         return 1
     fi
-    printf '%s\n' "$$" >&"$WP2SHELL_LOCK_FD"
+    if lock_path_is_acceptable "$lock_path"; then
+        printf '%s\n%s\n' "$WP2SHELL_LOCK_MARKER" "$$" > "$lock_path" 2>/dev/null || true
+    fi
     return 0
 }
 

@@ -269,7 +269,7 @@ setup_run_environment() {
 }
 
 check_dependencies() {
-    if ! require_command php sha1sum sha256sum curl date stat base64; then
+    if ! require_command php sha1sum sha256sum curl date stat base64 du df; then
         die "$EXIT_INTERNAL" "Niet alle vereiste commando's zijn aanwezig"
     fi
     detect_optional_commands
@@ -928,6 +928,7 @@ main() {
         if ! acquire_run_lock "${WP2SHELL_LOCK_FILE:-/var/run/wp2shell.lock}"; then
             die "$EXIT_LOCKED" "Er draait al een wp2shell-run, deze run stopt"
         fi
+        backup_reset_reservations
     fi
     local subcommand_status=0
     case $OPT_SUBCOMMAND in
