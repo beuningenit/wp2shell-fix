@@ -1,4 +1,5 @@
 WP2SHELL_BACKUP_LOADED=1
+WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
 
 backup_root_for_run() {
     printf '%s/%s' "${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}" "${WP2SHELL_RUN_ID:-onbekend}"
@@ -30,10 +31,6 @@ prepare_backup_directory() {
     if ! mkdir -p -- "$backup_dir"; then
         log_error "Kan backupmap niet aanmaken: $backup_dir"
         return 1
-    fi
-    local root=${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}
-    if [ -d "$root" ] && [ ! -f "$root/.wp2shell-backupboom" ]; then
-        printf 'Deze map wordt beheerd door wp2shell en bevat backups per run.\n' > "$root/.wp2shell-backupboom" 2>/dev/null || true
     fi
     chmod 0700 -- "$backup_dir" 2>/dev/null || true
     return 0
@@ -191,6 +188,81 @@ backup_available_kilobytes() {
     return 0
 }
 
+backup_reservation_file() {
+    printf '%s/backup-reservering' "${WP2SHELL_STATE_DIR:-/var/lib/wp2shell}"
+    return 0
+}
+
+backup_reserve_space() {
+    local needed=$1 backup_dir=$2
+    local ledger lock reserved=0 available free
+    ledger=$(backup_reservation_file)
+    mkdir -p -- "$(dirname -- "$ledger")" 2>/dev/null || true
+    lock="$ledger.lock"
+    exec 8>"$lock" 2>/dev/null || return 0
+    if ! have_command flock; then
+        log_warn "flock ontbreekt, de ruimtereservering tussen parallelle workers is niet afdwingbaar"
+        exec 8>&-
+        return 0
+    fi
+    if ! flock -w 60 8; then
+        log_warn "Kon de ruimtereservering niet vergrendelen, de backup gaat door zonder reservering"
+        exec 8>&-
+        return 0
+    fi
+    if [ -r "$ledger" ]; then
+        read -r reserved < "$ledger" || reserved=0
+    fi
+    case $reserved in
+        ''|*[!0-9]*) reserved=0 ;;
+    esac
+    available=$(backup_available_kilobytes "$backup_dir")
+    free=$((available - reserved))
+    if [ "$free" -lt "$needed" ]; then
+        flock -u 8
+        exec 8>&-
+        log_error "Onvoldoende ruimte na verrekening van gelijktijdige backups: $((free / 1024)) MB vrij, $((needed / 1024)) MB nodig"
+        return 1
+    fi
+    printf '%s\n' "$((reserved + needed))" > "$ledger" 2>/dev/null || true
+    flock -u 8
+    exec 8>&-
+    WP2SHELL_BACKUP_RESERVED_KILOBYTES=$needed
+    return 0
+}
+
+backup_release_space() {
+    local amount=${WP2SHELL_BACKUP_RESERVED_KILOBYTES:-0}
+    case $amount in
+        ''|*[!0-9]*) amount=0 ;;
+    esac
+    WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
+    if [ "$amount" -eq 0 ]; then
+        return 0
+    fi
+    local ledger lock reserved=0
+    ledger=$(backup_reservation_file)
+    lock="$ledger.lock"
+    exec 8>"$lock" 2>/dev/null || return 0
+    if ! have_command flock || ! flock -w 60 8; then
+        exec 8>&-
+        return 0
+    fi
+    if [ -r "$ledger" ]; then
+        read -r reserved < "$ledger" || reserved=0
+    fi
+    case $reserved in
+        ''|*[!0-9]*) reserved=0 ;;
+    esac
+    if [ "$reserved" -lt "$amount" ]; then
+        reserved=$amount
+    fi
+    printf '%s\n' "$((reserved - amount))" > "$ledger" 2>/dev/null || true
+    flock -u 8
+    exec 8>&-
+    return 0
+}
+
 backup_space_is_sufficient() {
     local site_path=$1 backup_dir=$2 owner_user=${3:-}
     local margin=${WP2SHELL_BACKUP_FREE_MARGIN_PERCENT:-30}
@@ -211,7 +283,7 @@ backup_space_is_sufficient() {
         log_warn "Kon de omvang van de database voor $site_path niet vaststellen, de ruimtecontrole rekent alleen met de bestanden"
     fi
     needed=$(((site_size + database_size) + ((site_size + database_size) * margin / 100)))
-    if [ "$available" -ge "$needed" ]; then
+    if [ "$available" -ge "$needed" ] && backup_reserve_space "$needed" "$backup_dir"; then
         return 0
     fi
     log_error "Te weinig vrije ruimte voor een backup van $site_path: $((available / 1024)) MB beschikbaar, $((needed / 1024)) MB nodig"
@@ -252,22 +324,27 @@ backup_site() {
     fi
     log_info "Backup van bestanden voor $site_path"
     if ! backup_files_archive "$site_path" "$archive"; then
+        backup_release_space
         discard_incomplete_backup "$backup_dir"
         return 1
     fi
     if ! verify_files_archive "$archive"; then
+        backup_release_space
         discard_incomplete_backup "$backup_dir"
         return 1
     fi
     log_info "Backup van database voor $site_path"
     if ! backup_database_dump "$site_path" "$owner_user" "$dump"; then
+        backup_release_space
         discard_incomplete_backup "$backup_dir"
         return 1
     fi
     if ! verify_database_dump "$dump"; then
+        backup_release_space
         discard_incomplete_backup "$backup_dir"
         return 1
     fi
+    backup_release_space
     write_backup_manifest "$manifest" "$site_path" "$owner_user" "$archive" "$dump"
     chmod 0600 -- "$archive" "$dump" 2>/dev/null || true
     WP2SHELL_LAST_BACKUP_DIR="$backup_dir"

@@ -100,11 +100,11 @@ printf '{}\n' > "$PRUNE_ROOT/20260812-120000-1/aaa/manifest.json"
 CONF="$WORKROOT/prune.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$PRUNE_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$CONF"
 
-WP2SHELL_CONFIG_FILE="$CONF" "$REPO_ROOT/tools/prune-backups.sh" >/dev/null 2>&1
+WP2SHELL_CONFIG_FILE="$CONF" "$REPO_ROOT/tools/prune-backups.sh" --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
 expect_equal "zonder --apply wordt er niets verwijderd" "4" \
     "$(find "$PRUNE_ROOT" -mindepth 2 -maxdepth 2 -type d | wc -l | tr -d ' ')"
 
-WP2SHELL_CONFIG_FILE="$CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1
+WP2SHELL_CONFIG_FILE="$CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
 expect_equal "met --apply blijven alleen de herstelpunten over" "1" \
     "$(find "$PRUNE_ROOT" -mindepth 2 -maxdepth 2 -type d | wc -l | tr -d ' ')"
 expect_equal "het herstelpunt zelf is bewaard" "1" \
@@ -119,7 +119,7 @@ touch -d '2026-08-01' "$ORDER_ROOT/20260801-120000-1"
 touch -d '2026-08-13' "$ORDER_ROOT/20260813-120000-2"
 ORDER_CONF="$WORKROOT/volgorde.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$ORDER_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$ORDER_CONF"
-WP2SHELL_CONFIG_FILE="$ORDER_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --keep 1 >/dev/null 2>&1
+WP2SHELL_CONFIG_FILE="$ORDER_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
 expect_equal "de nieuwste run met een herstelpunt overleeft het opruimen" "aanwezig" \
     "$([ -d "$ORDER_ROOT/20260813-120000-2" ] && printf 'aanwezig' || printf 'weg')"
 expect_equal "de oudere run wordt wel opgeruimd" "weg" \
@@ -131,7 +131,7 @@ printf '{}\n' > "$DRY_ROOT/20260813-120000-1/site1/manifest.json"
 DRY_CONF="$WORKROOT/droog.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$DRY_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$DRY_CONF"
 voor=$(find "$DRY_ROOT" | LC_ALL=C sort)
-WP2SHELL_CONFIG_FILE="$DRY_CONF" "$REPO_ROOT/tools/prune-backups.sh" >/dev/null 2>&1
+WP2SHELL_CONFIG_FILE="$DRY_CONF" "$REPO_ROOT/tools/prune-backups.sh" --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
 na=$(find "$DRY_ROOT" | LC_ALL=C sort)
 expect_equal "zonder --apply verandert er niets op de schijf, ook geen lege runmap" "$voor" "$na"
 
@@ -149,7 +149,7 @@ SHIMEOF
 chmod 0755 -- "$SHIM_DIR/rm"
 fail_status=0
 PATH="$SHIM_DIR:$PATH" WP2SHELL_CONFIG_FILE="$FAIL_CONF" \
-    "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || fail_status=$?
+    "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || fail_status=$?
 expect_equal "een mislukte verwijdering geeft een exitcode die niet nul is" "1" "$fail_status"
 expect_equal "de map die niet verwijderd kon worden staat er nog" "aanwezig" \
     "$([ -d "$FAIL_ROOT/20260813-120000-1/site-onvolledig" ] && printf 'aanwezig' || printf 'weg')"
@@ -157,7 +157,7 @@ expect_equal "de map die niet verwijderd kon worden staat er nog" "aanwezig" \
 UNSAFE_CONF="$WORKROOT/onveilig.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"/\"|" "$REPO_ROOT/config/wp2shell.conf" > "$UNSAFE_CONF"
 unsafe_status=0
-WP2SHELL_CONFIG_FILE="$UNSAFE_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || unsafe_status=$?
+WP2SHELL_CONFIG_FILE="$UNSAFE_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || unsafe_status=$?
 expect_equal "de hoofdmap wordt geweigerd als backupboom" "2" "$unsafe_status"
 
 VREEMD_ROOT="$WORKROOT/vreemde-boom"
@@ -165,10 +165,79 @@ mkdir -p "$VREEMD_ROOT/klantdata"
 VREEMD_CONF="$WORKROOT/vreemd.conf"
 sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$VREEMD_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$VREEMD_CONF"
 vreemd_status=0
-WP2SHELL_CONFIG_FILE="$VREEMD_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply >/dev/null 2>&1 || vreemd_status=$?
+WP2SHELL_CONFIG_FILE="$VREEMD_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || vreemd_status=$?
 expect_equal "een map zonder runmappen wordt geweigerd" "2" "$vreemd_status"
+
+ONBEREIKBAAR_CONF="$WORKROOT/onbereikbaar.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$PRUNE_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$ONBEREIKBAAR_CONF"
+slot_status=0
+WP2SHELL_CONFIG_FILE="$ONBEREIKBAAR_CONF" \
+    "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/bestaat-niet/slot" >/dev/null 2>&1 || slot_status=$?
+expect_equal "een onbereikbaar vergrendelingsbestand blokkeert het opruimen" "3" "$slot_status"
 expect_equal "de vreemde inhoud is onaangeroerd" "aanwezig" \
     "$([ -d "$VREEMD_ROOT/klantdata" ] && printf 'aanwezig' || printf 'weg')"
+
+MARKER_ROOT="$WORKROOT/gedeelde-backupmap"
+mkdir -p "$MARKER_ROOT/20260813-120000-1/site1" "$MARKER_ROOT/backup-van-iemand-anders"
+printf '{}\n' > "$MARKER_ROOT/20260813-120000-1/site1/manifest.json"
+printf 'kostbaar\n' > "$MARKER_ROOT/backup-van-iemand-anders/data.sql"
+printf 'markering\n' > "$MARKER_ROOT/.wp2shell-backupboom"
+MARKER_CONF="$WORKROOT/gedeeld.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$MARKER_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$MARKER_CONF"
+marker_status=0
+WP2SHELL_LOCK_FILE="$WORKROOT/prune.lock" WP2SHELL_CONFIG_FILE="$MARKER_CONF" \
+    "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1 || marker_status=$?
+expect_equal "een markeringsbestand alleen maakt een gedeelde map nog geen backupboom" "2" "$marker_status"
+expect_equal "de backup van een ander is onaangeroerd" "aanwezig" \
+    "$([ -f "$MARKER_ROOT/backup-van-iemand-anders/data.sql" ] && printf 'aanwezig' || printf 'weg')"
+
+LOCK_ROOT="$WORKROOT/vergrendeld"
+mkdir -p "$LOCK_ROOT/20260813-120000-1/site-onvolledig"
+head -c 100 /dev/zero > "$LOCK_ROOT/20260813-120000-1/site-onvolledig/files.tar.gz"
+LOCK_CONF="$WORKROOT/vergrendeld.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$LOCK_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$LOCK_CONF"
+LOCK_FILE="$WORKROOT/actieve-run.lock"
+: > "$LOCK_FILE"
+lock_status=0
+if command -v flock >/dev/null 2>&1; then
+    exec 7>"$LOCK_FILE"
+    flock -n 7
+    WP2SHELL_CONFIG_FILE="$LOCK_CONF" \
+        "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$LOCK_FILE" >/dev/null 2>&1 || lock_status=$?
+    flock -u 7
+    exec 7>&-
+    expect_equal "opruimen tijdens een lopende run wordt geweigerd" "3" "$lock_status"
+    expect_equal "de backup van de lopende run staat er nog" "aanwezig" \
+        "$([ -d "$LOCK_ROOT/20260813-120000-1/site-onvolledig" ] && printf 'aanwezig' || printf 'weg')"
+    lock_status=0
+    WP2SHELL_CONFIG_FILE="$LOCK_CONF" \
+        "$REPO_ROOT/tools/prune-backups.sh" --apply --lock-file "$LOCK_FILE" >/dev/null 2>&1 || lock_status=$?
+    expect_equal "zonder lopende run mag het opruimen wel" "0" "$lock_status"
+fi
+
+RESERVE_STATE="$WORKROOT/reservering"
+mkdir -p "$RESERVE_STATE"
+(
+    WP2SHELL_STATE_DIR="$RESERVE_STATE"
+    beschikbaar=$(backup_available_kilobytes "$WORKROOT")
+    helft=$((beschikbaar * 60 / 100))
+    eerste=1
+    tweede=1
+    WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
+    backup_reserve_space "$helft" "$WORKROOT" >/dev/null 2>&1 && eerste=0
+    (
+        WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
+        backup_reserve_space "$helft" "$WORKROOT" >/dev/null 2>&1
+    ) && tweede=0
+    printf '%s %s\n' "$eerste" "$tweede" > "$RESERVE_STATE/uitkomst"
+    backup_release_space
+    printf '%s\n' "$(cat "$(backup_reservation_file)" 2>/dev/null || printf 'leeg')" > "$RESERVE_STATE/na-vrijgave"
+)
+read -r eerste tweede < "$RESERVE_STATE/uitkomst"
+expect_equal "de eerste worker krijgt zijn ruimte gereserveerd" "0" "$eerste"
+expect_equal "de tweede worker wordt geweigerd omdat de ruimte al vergeven is" "1" "$tweede"
+expect_equal "na vrijgave staat het grootboek weer op nul" "0" \
+    "$(cat "$RESERVE_STATE/na-vrijgave")"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then

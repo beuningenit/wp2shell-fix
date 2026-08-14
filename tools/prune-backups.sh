@@ -12,10 +12,10 @@ else
     exit 2
 fi
 
-BACKUP_ROOT_MARKER=.wp2shell-backupboom
 APPLY=0
 KEEP=${WP2SHELL_BACKUP_KEEP_RUNS:-3}
 BACKUP_ROOT=${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}
+LOCK_FILE=${WP2SHELL_LOCK_FILE:-/var/run/wp2shell.lock}
 
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -28,8 +28,12 @@ while [ "$#" -gt 0 ]; do
             shift
             BACKUP_ROOT=${1:-$BACKUP_ROOT}
             ;;
+        --lock-file)
+            shift
+            LOCK_FILE=${1:-$LOCK_FILE}
+            ;;
         --help|-h)
-            printf 'Gebruik: %s [--apply] [--keep <aantal>] [--backup-dir <pad>]\n\n' "$0"
+            printf 'Gebruik: %s [--apply] [--keep <aantal>] [--backup-dir <pad>] [--lock-file <pad>]\n\n' "$0"
             printf 'Zonder --apply wordt alleen getoond wat er zou gebeuren en verandert er\n'
             printf 'niets op de schijf.\n'
             printf 'Onvolledige backups, te herkennen aan een ontbrekende manifest.json,\n'
@@ -68,13 +72,13 @@ backup_root_is_trustworthy() {
         printf 'Weigering: %s ligt te hoog in de boom voor een backupmap\n' "$resolved" >&2
         return 1
     fi
-    if [ -f "$resolved/$BACKUP_ROOT_MARKER" ]; then
-        return 0
-    fi
     local seen=0
     while IFS= read -r -d '' entry; do
         seen=1
         base=$(basename -- "$entry")
+        if [ ! -d "$entry" ]; then
+            continue
+        fi
         case $base in
             [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
             *)
@@ -94,6 +98,27 @@ backup_root_is_trustworthy() {
 if ! backup_root_is_trustworthy "$BACKUP_ROOT"; then
     printf 'Er is niets verwijderd.\n' >&2
     exit 2
+fi
+
+PRUNE_LOCK=$LOCK_FILE
+if ! exec 9>"$PRUNE_LOCK" 2>/dev/null; then
+    printf 'Het vergrendelingsbestand %s kan niet geopend worden, dus er valt niet vast\n' "$PRUNE_LOCK" >&2
+    printf 'te stellen of er een wp2shell-run draait. Opruimen tijdens een lopende backup\n' >&2
+    printf 'kan een backup verwijderen die op dat moment geschreven wordt. Er is niets\n' >&2
+    printf 'verwijderd.\n' >&2
+    exit 3
+fi
+if command -v flock >/dev/null 2>&1; then
+    if ! flock -n 9; then
+        printf 'Er draait een wp2shell-run, opruimen tijdens een lopende backup kan een\n' >&2
+        printf 'backup verwijderen die op dat moment geschreven wordt. Er is niets\n' >&2
+        printf 'verwijderd. Probeer het opnieuw als de run klaar is.\n' >&2
+        exit 3
+    fi
+else
+    printf 'flock ontbreekt, er kan niet vastgesteld worden of er een run draait.\n' >&2
+    printf 'Er is niets verwijderd.\n' >&2
+    exit 3
 fi
 
 printf 'Backupmap : %s\n' "$BACKUP_ROOT"
@@ -163,7 +188,15 @@ while IFS= read -r -d '' site_dir; do
     fi
     found_incomplete=1
     remove_directory "$site_dir" "onvolledig" || true
-done < <(find -P "$BACKUP_ROOT" -mindepth 2 -maxdepth 2 -type d -print0 2>/dev/null)
+done < <(
+    while IFS= read -r -d '' run_dir; do
+        case $(basename -- "$run_dir") in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]-*) : ;;
+            *) continue ;;
+        esac
+        find -P "$run_dir" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null
+    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+)
 if [ "$found_incomplete" = "0" ]; then
     printf '   geen\n'
 fi
