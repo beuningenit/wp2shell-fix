@@ -52,7 +52,7 @@ backup_reset_reservations() {
     local ledger
     ledger=$(backup_reservation_file)
     mkdir -p -- "$(dirname -- "$ledger")" 2>/dev/null || true
-    printf '0\n' > "$ledger" 2>/dev/null || true
+    printf '0 0\n' > "$ledger" 2>/dev/null || true
     WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
     return 0
 }
@@ -225,38 +225,75 @@ backup_reservation_file() {
     return 0
 }
 
+backup_reservation_is_required() {
+    local jobs=${WP2SHELL_PARALLEL_JOBS:-1}
+    case $jobs in
+        ''|*[!0-9]*) jobs=1 ;;
+    esac
+    if [ "$jobs" -gt 1 ]; then
+        return 0
+    fi
+    return 1
+}
+
+backup_reservation_unavailable() {
+    local reason=$1
+    if backup_reservation_is_required; then
+        log_error "$reason, en met gelijktijdige backups kan de vrije ruimte dan niet bewaakt worden"
+        return 1
+    fi
+    log_warn "$reason, dat is bij sequentieel draaien geen bezwaar want er is geen tweede worker"
+    return 0
+}
+
 backup_reserve_space() {
     local needed=$1 backup_dir=$2
-    local ledger lock reserved=0 available free
+    local ledger lock reserved=0 baseline=0 free
     ledger=$(backup_reservation_file)
-    mkdir -p -- "$(dirname -- "$ledger")" 2>/dev/null || true
+    if ! mkdir -p -- "$(dirname -- "$ledger")" 2>/dev/null; then
+        backup_reservation_unavailable "Kan de map voor het reserveringsgrootboek niet aanmaken"
+        return $?
+    fi
     lock="$ledger.lock"
-    exec 8>"$lock" 2>/dev/null || return 0
+    if ! exec 8>"$lock" 2>/dev/null; then
+        backup_reservation_unavailable "Kan het reserveringsgrootboek niet openen"
+        return $?
+    fi
     if ! have_command flock; then
-        log_warn "flock ontbreekt, de ruimtereservering tussen parallelle workers is niet afdwingbaar"
         exec 8>&-
-        return 0
+        backup_reservation_unavailable "flock ontbreekt"
+        return $?
     fi
     if ! flock -w 60 8; then
-        log_warn "Kon de ruimtereservering niet vergrendelen, de backup gaat door zonder reservering"
         exec 8>&-
-        return 0
+        backup_reservation_unavailable "Kon het reserveringsgrootboek niet vergrendelen binnen een minuut"
+        return $?
     fi
     if [ -r "$ledger" ]; then
-        read -r reserved < "$ledger" || reserved=0
+        read -r reserved baseline < "$ledger" || true
     fi
     case $reserved in
         ''|*[!0-9]*) reserved=0 ;;
     esac
-    available=$(backup_available_kilobytes "$backup_dir")
-    free=$((available - reserved))
+    case ${baseline:-} in
+        ''|*[!0-9]*) baseline=0 ;;
+    esac
+    if [ "$reserved" -eq 0 ]; then
+        baseline=$(backup_available_kilobytes "$backup_dir")
+    fi
+    free=$((baseline - reserved))
     if [ "$free" -lt "$needed" ]; then
         flock -u 8
         exec 8>&-
         log_error "Onvoldoende ruimte na verrekening van gelijktijdige backups: $((free / 1024)) MB vrij, $((needed / 1024)) MB nodig"
         return 1
     fi
-    printf '%s\n' "$((reserved + needed))" > "$ledger" 2>/dev/null || true
+    if ! printf '%s %s\n' "$((reserved + needed))" "$baseline" > "$ledger" 2>/dev/null; then
+        flock -u 8
+        exec 8>&-
+        backup_reservation_unavailable "Kan het reserveringsgrootboek niet bijwerken"
+        return $?
+    fi
     flock -u 8
     exec 8>&-
     WP2SHELL_BACKUP_RESERVED_KILOBYTES=$needed
@@ -272,7 +309,7 @@ backup_release_space() {
     if [ "$amount" -eq 0 ]; then
         return 0
     fi
-    local ledger lock reserved=0
+    local ledger lock reserved=0 baseline=0
     ledger=$(backup_reservation_file)
     lock="$ledger.lock"
     exec 8>"$lock" 2>/dev/null || return 0
@@ -281,15 +318,18 @@ backup_release_space() {
         return 0
     fi
     if [ -r "$ledger" ]; then
-        read -r reserved < "$ledger" || reserved=0
+        read -r reserved baseline < "$ledger" || true
     fi
     case $reserved in
         ''|*[!0-9]*) reserved=0 ;;
     esac
+    case ${baseline:-} in
+        ''|*[!0-9]*) baseline=0 ;;
+    esac
     if [ "$reserved" -lt "$amount" ]; then
         reserved=$amount
     fi
-    printf '%s\n' "$((reserved - amount))" > "$ledger" 2>/dev/null || true
+    printf '%s %s\n' "$((reserved - amount))" "$baseline" > "$ledger" 2>/dev/null || true
     flock -u 8
     exec 8>&-
     return 0

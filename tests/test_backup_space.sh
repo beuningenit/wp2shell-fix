@@ -32,10 +32,21 @@ expect_equal() {
     fi
 }
 
+schrijf_herstelpunt() {
+    local site_dir=$1
+    mkdir -p -- "$site_dir"
+    head -c 1000 /dev/zero > "$site_dir/files.tar.gz"
+    printf 'CREATE TABLE wp_options;\n' > "$site_dir/database.sql"
+    printf '{"run_id":"x","files_archive_sha256":"aa","database_dump_bytes":24}\n' > "$site_dir/manifest.json"
+    return 0
+}
+
 WORKROOT=$(mktemp -d)
 trap 'rm -rf -- "$WORKROOT"' EXIT
 
 WP2SHELL_BACKUP_DIR="$WORKROOT/backups"
+WP2SHELL_STATE_DIR="$WORKROOT/state"
+mkdir -p "$WP2SHELL_STATE_DIR"
 WP2SHELL_RUN_ID=testrun
 WP2SHELL_FINDINGS_FILE="$WORKROOT/findings.ndjson"
 : > "$WP2SHELL_FINDINGS_FILE"
@@ -55,7 +66,7 @@ expect_equal "de map is daadwerkelijk verdwenen" "weg" \
 
 prepare_backup_directory "$backup_dir" >/dev/null 2>&1
 head -c 200000 /dev/zero > "$backup_dir/files.tar.gz"
-printf '{}\n' > "$backup_dir/manifest.json"
+printf '{"database_dump_bytes":1}\n' > "$backup_dir/manifest.json"
 discard_incomplete_backup "$backup_dir" >/dev/null 2>&1
 expect_equal "een volledige backup blijft staan" "aanwezig" \
     "$([ -d "$backup_dir" ] && printf 'aanwezig' || printf 'weg')"
@@ -95,7 +106,7 @@ for run in 20260812-120000-1 20260813-120000-2; do
         head -c 100000 /dev/zero > "$PRUNE_ROOT/$run/$site/files.tar.gz"
     done
 done
-printf '{}\n' > "$PRUNE_ROOT/20260812-120000-1/aaa/manifest.json"
+schrijf_herstelpunt "$PRUNE_ROOT/20260812-120000-1/aaa"
 for run in 20260812-120000-1 20260813-120000-2; do
     printf '{"tool":"wp2shell"}\n' > "$PRUNE_ROOT/$run/.wp2shell-run"
 done
@@ -115,8 +126,8 @@ expect_equal "het herstelpunt zelf is bewaard" "1" \
 
 ORDER_ROOT="$WORKROOT/volgorde"
 mkdir -p "$ORDER_ROOT/20260801-120000-1/site1" "$ORDER_ROOT/20260801-120000-1/site-onvolledig" "$ORDER_ROOT/20260813-120000-2/site1"
-printf '{}\n' > "$ORDER_ROOT/20260801-120000-1/site1/manifest.json"
-printf '{}\n' > "$ORDER_ROOT/20260813-120000-2/site1/manifest.json"
+schrijf_herstelpunt "$ORDER_ROOT/20260801-120000-1/site1"
+schrijf_herstelpunt "$ORDER_ROOT/20260813-120000-2/site1"
 head -c 1000 /dev/zero > "$ORDER_ROOT/20260801-120000-1/site-onvolledig/files.tar.gz"
 printf '{"tool":"wp2shell"}\n' > "$ORDER_ROOT/20260801-120000-1/.wp2shell-run"
 printf '{"tool":"wp2shell"}\n' > "$ORDER_ROOT/20260813-120000-2/.wp2shell-run"
@@ -132,7 +143,7 @@ expect_equal "de oudere run wordt wel opgeruimd" "weg" \
 
 DRY_ROOT="$WORKROOT/droog"
 mkdir -p "$DRY_ROOT/20260813-120000-9" "$DRY_ROOT/20260813-120000-1/site1"
-printf '{}\n' > "$DRY_ROOT/20260813-120000-1/site1/manifest.json"
+schrijf_herstelpunt "$DRY_ROOT/20260813-120000-1/site1"
 printf '{"tool":"wp2shell"}\n' > "$DRY_ROOT/20260813-120000-1/.wp2shell-run"
 printf '{"tool":"wp2shell"}\n' > "$DRY_ROOT/20260813-120000-9/.wp2shell-run"
 DRY_CONF="$WORKROOT/droog.conf"
@@ -187,7 +198,7 @@ expect_equal "de vreemde inhoud is onaangeroerd" "aanwezig" \
 
 MARKER_ROOT="$WORKROOT/gedeelde-backupmap"
 mkdir -p "$MARKER_ROOT/20260813-120000-1/site1" "$MARKER_ROOT/backup-van-iemand-anders"
-printf '{}\n' > "$MARKER_ROOT/20260813-120000-1/site1/manifest.json"
+schrijf_herstelpunt "$MARKER_ROOT/20260813-120000-1/site1"
 printf '{"tool":"wp2shell"}\n' > "$MARKER_ROOT/20260813-120000-1/.wp2shell-run"
 printf 'kostbaar\n' > "$MARKER_ROOT/backup-van-iemand-anders/data.sql"
 printf 'markering\n' > "$MARKER_ROOT/.wp2shell-backupboom"
@@ -241,7 +252,8 @@ mkdir -p "$RESERVE_STATE"
     ) && tweede=0
     printf '%s %s\n' "$eerste" "$tweede" > "$RESERVE_STATE/uitkomst"
     backup_release_space
-    printf '%s\n' "$(cat "$(backup_reservation_file)" 2>/dev/null || printf 'leeg')" > "$RESERVE_STATE/na-vrijgave"
+    read -r na_reserved _ < "$(backup_reservation_file)"
+    printf '%s\n' "$na_reserved" > "$RESERVE_STATE/na-vrijgave"
 )
 read -r eerste tweede < "$RESERVE_STATE/uitkomst"
 expect_equal "de eerste worker krijgt zijn ruimte gereserveerd" "0" "$eerste"
@@ -275,12 +287,58 @@ STALE_STATE="$WORKROOT/blijfhangen"
 mkdir -p "$STALE_STATE"
 (
     WP2SHELL_STATE_DIR="$STALE_STATE"
-    printf '999999999\n' > "$(backup_reservation_file)"
+    printf '999999999 999999999\n' > "$(backup_reservation_file)"
     backup_reset_reservations
-    printf '%s\n' "$(cat "$(backup_reservation_file)")" > "$STALE_STATE/na-reset"
+    read -r na_reset _ < "$(backup_reservation_file)"
+    printf '%s\n' "$na_reset" > "$STALE_STATE/na-reset"
 )
 expect_equal "een blijven hangen reservering wordt bij een nieuwe run gewist" "0" \
     "$(cat "$STALE_STATE/na-reset")"
+
+KAPOT_ROOT="$WORKROOT/kapot-manifest"
+mkdir -p "$KAPOT_ROOT/20260801-120000-1" "$KAPOT_ROOT/20260813-120000-2/site1"
+printf '{"tool":"wp2shell"}\n' > "$KAPOT_ROOT/20260801-120000-1/.wp2shell-run"
+printf '{"tool":"wp2shell"}\n' > "$KAPOT_ROOT/20260813-120000-2/.wp2shell-run"
+schrijf_herstelpunt "$KAPOT_ROOT/20260801-120000-1/site1"
+head -c 1000 /dev/zero > "$KAPOT_ROOT/20260813-120000-2/site1/files.tar.gz"
+: > "$KAPOT_ROOT/20260813-120000-2/site1/manifest.json"
+touch -d '2026-08-01' "$KAPOT_ROOT/20260801-120000-1"
+touch -d '2026-08-13' "$KAPOT_ROOT/20260813-120000-2"
+KAPOT_CONF="$WORKROOT/kapot.conf"
+sed "s|^WP2SHELL_BACKUP_DIR=.*|WP2SHELL_BACKUP_DIR=\"$KAPOT_ROOT\"|" "$REPO_ROOT/config/wp2shell.conf" > "$KAPOT_CONF"
+WP2SHELL_CONFIG_FILE="$KAPOT_CONF" "$REPO_ROOT/tools/prune-backups.sh" --apply --keep 1 --lock-file "$WORKROOT/test.lock" >/dev/null 2>&1
+expect_equal "een leeg manifest telt niet als herstelpunt en verdringt geen geldige backup" "aanwezig" \
+    "$([ -f "$KAPOT_ROOT/20260801-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
+
+for optie in --keep --backup-dir --lock-file; do
+    optie_status=0
+    "$REPO_ROOT/tools/prune-backups.sh" --apply "$optie" >/dev/null 2>&1 || optie_status=$?
+    expect_equal "de optie $optie zonder waarde wordt geweigerd" "2" "$optie_status"
+done
+
+(
+    WP2SHELL_STATE_DIR="$WORKROOT/onbeschrijfbaar/state"
+    gesloten=0
+    backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1 || gesloten=1
+    printf '%s\n' "$gesloten" > "$WORKROOT/faalt-gesloten"
+) 2>/dev/null
+chmod 0555 "$WORKROOT" 2>/dev/null || true
+gesloten_status=0
+(
+    WP2SHELL_STATE_DIR="$WORKROOT/kan-niet/state"
+    WP2SHELL_PARALLEL_JOBS=4
+    backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1
+) || gesloten_status=1
+chmod 0755 "$WORKROOT" 2>/dev/null || true
+expect_equal "een onbeschrijfbaar grootboek blokkeert de reservering bij parallel draaien" "1" "$gesloten_status"
+
+sequentieel_status=0
+(
+    WP2SHELL_STATE_DIR="$WORKROOT/kan-niet/state"
+    WP2SHELL_PARALLEL_JOBS=1
+    backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1
+) || sequentieel_status=1
+expect_equal "sequentieel draaien loopt door zonder grootboek, want er is geen tweede worker" "0" "$sequentieel_status"
 
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then

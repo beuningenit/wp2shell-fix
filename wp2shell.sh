@@ -244,7 +244,6 @@ setup_run_environment() {
         die "$EXIT_INTERNAL" "Kan rapportmap niet aanmaken: $WP2SHELL_RUN_DIR"
     fi
     chmod 0750 -- "$WP2SHELL_RUN_DIR" 2>/dev/null || true
-    backup_reset_reservations
     WP2SHELL_RUN_LOG="$WP2SHELL_RUN_DIR/run.log"
     WP2SHELL_AUDIT_LOG="$WP2SHELL_RUN_DIR/audit.log"
     WP2SHELL_FINDINGS_FILE="$WP2SHELL_RUN_DIR/findings.ndjson"
@@ -929,6 +928,7 @@ main() {
         if ! acquire_run_lock "${WP2SHELL_LOCK_FILE:-/var/run/wp2shell.lock}"; then
             die "$EXIT_LOCKED" "Er draait al een wp2shell-run, deze run stopt"
         fi
+        backup_reset_reservations
     fi
     local subcommand_status=0
     case $OPT_SUBCOMMAND in

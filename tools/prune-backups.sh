@@ -17,20 +17,32 @@ KEEP=${WP2SHELL_BACKUP_KEEP_RUNS:-3}
 BACKUP_ROOT=${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}
 LOCK_FILE=${WP2SHELL_LOCK_FILE:-/var/run/wp2shell.lock}
 
+require_value() {
+    local option=$1 value=${2:-}
+    case $value in
+        ''|--*)
+            printf 'De optie %s heeft een waarde nodig\n' "$option" >&2
+            exit 2
+            ;;
+    esac
+    printf '%s' "$value"
+    return 0
+}
+
 while [ "$#" -gt 0 ]; do
     case $1 in
         --apply) APPLY=1 ;;
         --keep)
+            KEEP=$(require_value --keep "${2:-}") || exit 2
             shift
-            KEEP=${1:-3}
             ;;
         --backup-dir)
+            BACKUP_ROOT=$(require_value --backup-dir "${2:-}") || exit 2
             shift
-            BACKUP_ROOT=${1:-$BACKUP_ROOT}
             ;;
         --lock-file)
+            LOCK_FILE=$(require_value --lock-file "${2:-}") || exit 2
             shift
-            LOCK_FILE=${1:-$LOCK_FILE}
             ;;
         --help|-h)
             printf 'Gebruik: %s [--apply] [--keep <aantal>] [--backup-dir <pad>] [--lock-file <pad>]\n\n' "$0"
@@ -179,8 +191,35 @@ run_is_ours() {
     return 1
 }
 
+manifest_is_complete() {
+    local manifest=$1 site_dir archive dump
+    if [ ! -s "$manifest" ]; then
+        return 1
+    fi
+    if ! grep -q '"database_dump_bytes"' -- "$manifest" 2>/dev/null; then
+        return 1
+    fi
+    site_dir=$(dirname -- "$manifest")
+    archive="$site_dir/files.tar.gz"
+    dump="$site_dir/database.sql"
+    if [ ! -s "$archive" ] || [ ! -s "$dump" ]; then
+        return 1
+    fi
+    return 0
+}
+
+site_has_recovery_point() {
+    manifest_is_complete "$1/manifest.json"
+}
+
 run_has_recovery_point() {
-    find -P "$1" -mindepth 2 -maxdepth 2 -name manifest.json -type f -print -quit 2>/dev/null | grep -q .
+    local site_dir
+    while IFS= read -r -d '' site_dir; do
+        if site_has_recovery_point "$site_dir"; then
+            return 0
+        fi
+    done < <(find -P "$1" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
+    return 1
 }
 
 ordered_runs=()
@@ -200,7 +239,7 @@ done < <(
 printf 'Onvolledige backups zonder herstelwaarde:\n'
 found_incomplete=0
 while IFS= read -r -d '' site_dir; do
-    if [ -f "$site_dir/manifest.json" ]; then
+    if site_has_recovery_point "$site_dir"; then
         continue
     fi
     found_incomplete=1
