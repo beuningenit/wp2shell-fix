@@ -13,7 +13,7 @@ REPORT_EMAIL="support@beuningenit.nl"
 DRY_RUN=0
 
 PACKAGE_CONTENTS=(wp2shell.sh lib config tools tests README.md CLAUDE.md)
-REQUIRED_COMMANDS=(php find grep tar sha1sum sha256sum curl flock base64)
+REQUIRED_COMMANDS=(php find grep tar sha1sum sha256sum curl flock base64 du df gzip)
 
 usage() {
     cat <<'USAGE'
@@ -222,7 +222,7 @@ deploy_remote() {
         ssh "${ssh_options[@]}" "$ssh_target" 'true' || fail "Kan niet inloggen op $TARGET_HOST"
         local remote_missing
         remote_missing=$(ssh "${ssh_options[@]}" "$ssh_target" \
-            'for c in php find grep tar sha1sum sha256sum curl flock base64; do command -v $c >/dev/null 2>&1 || printf "%s " "$c"; done')
+            'for c in php find grep tar sha1sum sha256sum curl flock base64 du df gzip; do command -v $c >/dev/null 2>&1 || printf "%s " "$c"; done')
         if [ -n "$remote_missing" ]; then
             fail "Op $TARGET_HOST ontbreken: $remote_missing"
         fi
