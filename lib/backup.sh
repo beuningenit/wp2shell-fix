@@ -1,5 +1,5 @@
 WP2SHELL_BACKUP_LOADED=1
-WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
+WP2SHELL_BACKUP_RESERVED_DIRECTORY=""
 
 backup_root_for_run() {
     printf '%s/%s' "${WP2SHELL_BACKUP_DIR:-/var/backups/wp2shell}" "${WP2SHELL_RUN_ID:-onbekend}"
@@ -52,8 +52,8 @@ backup_reset_reservations() {
     local ledger
     ledger=$(backup_reservation_file)
     mkdir -p -- "$(dirname -- "$ledger")" 2>/dev/null || true
-    printf '0 0\n' > "$ledger" 2>/dev/null || true
-    WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
+    : > "$ledger" 2>/dev/null || true
+    WP2SHELL_BACKUP_RESERVED_DIRECTORY=""
     return 0
 }
 
@@ -246,9 +246,54 @@ backup_reservation_unavailable() {
     return 0
 }
 
+backup_ledger_outstanding_kilobytes() {
+    local ledger=$1 skip_dir=$2
+    local needed dir written rest outstanding=0
+    if [ ! -r "$ledger" ]; then
+        printf '0'
+        return 0
+    fi
+    while IFS=' ' read -r needed rest || [ -n "$needed" ]; do
+        dir=$rest
+        case $needed in
+            ''|*[!0-9]*) continue ;;
+        esac
+        if [ -z "$dir" ] || [ "$dir" = "$skip_dir" ]; then
+            continue
+        fi
+        written=$(du -sk -- "$dir" 2>/dev/null | cut -f1) || written=0
+        case $written in
+            ''|*[!0-9]*) written=0 ;;
+        esac
+        if [ "$written" -lt "$needed" ]; then
+            outstanding=$((outstanding + needed - written))
+        fi
+    done < "$ledger"
+    printf '%s' "$outstanding"
+    return 0
+}
+
+backup_ledger_without_directory() {
+    local ledger=$1 skip_dir=$2
+    local needed rest
+    if [ ! -r "$ledger" ]; then
+        return 0
+    fi
+    while IFS=' ' read -r needed rest || [ -n "$needed" ]; do
+        case $needed in
+            ''|*[!0-9]*) continue ;;
+        esac
+        if [ -z "$rest" ] || [ "$rest" = "$skip_dir" ]; then
+            continue
+        fi
+        printf '%s %s\n' "$needed" "$rest"
+    done < "$ledger"
+    return 0
+}
+
 backup_reserve_space() {
     local needed=$1 backup_dir=$2
-    local ledger lock reserved=0 baseline=0 free
+    local ledger lock outstanding available free overig
     ledger=$(backup_reservation_file)
     if ! mkdir -p -- "$(dirname -- "$ledger")" 2>/dev/null; then
         backup_reservation_unavailable "Kan de map voor het reserveringsgrootboek niet aanmaken"
@@ -269,26 +314,17 @@ backup_reserve_space() {
         backup_reservation_unavailable "Kon het reserveringsgrootboek niet vergrendelen binnen een minuut"
         return $?
     fi
-    if [ -r "$ledger" ]; then
-        read -r reserved baseline < "$ledger" || true
-    fi
-    case $reserved in
-        ''|*[!0-9]*) reserved=0 ;;
-    esac
-    case ${baseline:-} in
-        ''|*[!0-9]*) baseline=0 ;;
-    esac
-    if [ "$reserved" -eq 0 ]; then
-        baseline=$(backup_available_kilobytes "$backup_dir")
-    fi
-    free=$((baseline - reserved))
+    outstanding=$(backup_ledger_outstanding_kilobytes "$ledger" "$backup_dir")
+    available=$(backup_available_kilobytes "$backup_dir")
+    free=$((available - outstanding))
     if [ "$free" -lt "$needed" ]; then
         flock -u 8
         exec 8>&-
         log_error "Onvoldoende ruimte na verrekening van gelijktijdige backups: $((free / 1024)) MB vrij, $((needed / 1024)) MB nodig"
         return 1
     fi
-    if ! printf '%s %s\n' "$((reserved + needed))" "$baseline" > "$ledger" 2>/dev/null; then
+    overig=$(backup_ledger_without_directory "$ledger" "$backup_dir")
+    if ! { [ -n "$overig" ] && printf '%s\n' "$overig"; printf '%s %s\n' "$needed" "$backup_dir"; } > "$ledger" 2>/dev/null; then
         flock -u 8
         exec 8>&-
         backup_reservation_unavailable "Kan het reserveringsgrootboek niet bijwerken"
@@ -296,20 +332,17 @@ backup_reserve_space() {
     fi
     flock -u 8
     exec 8>&-
-    WP2SHELL_BACKUP_RESERVED_KILOBYTES=$needed
+    WP2SHELL_BACKUP_RESERVED_DIRECTORY=$backup_dir
     return 0
 }
 
 backup_release_space() {
-    local amount=${WP2SHELL_BACKUP_RESERVED_KILOBYTES:-0}
-    case $amount in
-        ''|*[!0-9]*) amount=0 ;;
-    esac
-    WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
-    if [ "$amount" -eq 0 ]; then
+    local backup_dir=${WP2SHELL_BACKUP_RESERVED_DIRECTORY:-}
+    WP2SHELL_BACKUP_RESERVED_DIRECTORY=""
+    if [ -z "$backup_dir" ]; then
         return 0
     fi
-    local ledger lock reserved=0 baseline=0
+    local ledger lock overig
     ledger=$(backup_reservation_file)
     lock="$ledger.lock"
     exec 8>"$lock" 2>/dev/null || return 0
@@ -317,19 +350,12 @@ backup_release_space() {
         exec 8>&-
         return 0
     fi
-    if [ -r "$ledger" ]; then
-        read -r reserved baseline < "$ledger" || true
+    overig=$(backup_ledger_without_directory "$ledger" "$backup_dir")
+    if [ -n "$overig" ]; then
+        printf '%s\n' "$overig" > "$ledger" 2>/dev/null || true
+    else
+        : > "$ledger" 2>/dev/null || true
     fi
-    case $reserved in
-        ''|*[!0-9]*) reserved=0 ;;
-    esac
-    case ${baseline:-} in
-        ''|*[!0-9]*) baseline=0 ;;
-    esac
-    if [ "$reserved" -lt "$amount" ]; then
-        reserved=$amount
-    fi
-    printf '%s %s\n' "$((reserved - amount))" "$baseline" > "$ledger" 2>/dev/null || true
     flock -u 8
     exec 8>&-
     return 0

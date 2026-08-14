@@ -344,7 +344,12 @@ elif [ "$found_old" = "0" ]; then
 fi
 
 if [ "$APPLY" = "1" ]; then
-    find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -empty -delete 2>/dev/null || true
+    while IFS= read -r -d '' run_dir; do
+        if ! run_is_ours "$run_dir"; then
+            continue
+        fi
+        rmdir -- "$run_dir" 2>/dev/null || true
+    done < <(find -P "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -empty -print0 2>/dev/null)
 fi
 
 printf '\n'

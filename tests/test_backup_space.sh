@@ -241,27 +241,27 @@ fi
 
 RESERVE_STATE="$WORKROOT/reservering"
 mkdir -p "$RESERVE_STATE"
+mkdir -p "$WORKROOT/worker-a" "$WORKROOT/worker-b" "$WORKROOT/worker-c"
 (
     WP2SHELL_STATE_DIR="$RESERVE_STATE"
+    backup_reset_reservations
     beschikbaar=$(backup_available_kilobytes "$WORKROOT")
     helft=$((beschikbaar * 60 / 100))
     eerste=1
     tweede=1
-    WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
-    backup_reserve_space "$helft" "$WORKROOT" >/dev/null 2>&1 && eerste=0
+    backup_reserve_space "$helft" "$WORKROOT/worker-a" >/dev/null 2>&1 && eerste=0
     (
-        WP2SHELL_BACKUP_RESERVED_KILOBYTES=0
-        backup_reserve_space "$helft" "$WORKROOT" >/dev/null 2>&1
+        WP2SHELL_BACKUP_RESERVED_DIRECTORY=""
+        backup_reserve_space "$helft" "$WORKROOT/worker-b" >/dev/null 2>&1
     ) && tweede=0
     printf '%s %s\n' "$eerste" "$tweede" > "$RESERVE_STATE/uitkomst"
     backup_release_space
-    read -r na_reserved _ < "$(backup_reservation_file)"
-    printf '%s\n' "$na_reserved" > "$RESERVE_STATE/na-vrijgave"
+    printf '%s\n' "$(wc -l < "$(backup_reservation_file)")" > "$RESERVE_STATE/na-vrijgave"
 )
 read -r eerste tweede < "$RESERVE_STATE/uitkomst"
 expect_equal "de eerste worker krijgt zijn ruimte gereserveerd" "0" "$eerste"
 expect_equal "de tweede worker wordt geweigerd omdat de ruimte al vergeven is" "1" "$tweede"
-expect_equal "na vrijgave staat het grootboek weer op nul" "0" \
+expect_equal "na vrijgave staat er geen reservering meer in het grootboek" "0" \
     "$(cat "$RESERVE_STATE/na-vrijgave")"
 
 BEWIJS_ROOT="$WORKROOT/herkomst"
@@ -290,13 +290,34 @@ STALE_STATE="$WORKROOT/blijfhangen"
 mkdir -p "$STALE_STATE"
 (
     WP2SHELL_STATE_DIR="$STALE_STATE"
-    printf '999999999 999999999\n' > "$(backup_reservation_file)"
+    printf '999999999 /nergens\n' > "$(backup_reservation_file)"
     backup_reset_reservations
-    read -r na_reset _ < "$(backup_reservation_file)"
-    printf '%s\n' "$na_reset" > "$STALE_STATE/na-reset"
+    printf '%s\n' "$(wc -l < "$(backup_reservation_file)")" > "$STALE_STATE/na-reset"
 )
 expect_equal "een blijven hangen reservering wordt bij een nieuwe run gewist" "0" \
     "$(cat "$STALE_STATE/na-reset")"
+
+VERREKEN_STATE="$WORKROOT/verrekening"
+mkdir -p "$VERREKEN_STATE" "$WORKROOT/bezig"
+head -c 409600 /dev/zero > "$WORKROOT/bezig/files.tar.gz"
+(
+    WP2SHELL_STATE_DIR="$VERREKEN_STATE"
+    backup_reset_reservations
+    printf '1000 %s\n' "$WORKROOT/bezig" > "$(backup_reservation_file)"
+    backup_ledger_outstanding_kilobytes "$(backup_reservation_file)" "" > "$VERREKEN_STATE/openstaand"
+    printf '2000 %s\n' "$WORKROOT/bezig" > "$(backup_reservation_file)"
+    backup_ledger_outstanding_kilobytes "$(backup_reservation_file)" "$WORKROOT/bezig" > "$VERREKEN_STATE/eigen-regel"
+)
+openstaand=$(cat "$VERREKEN_STATE/openstaand")
+tests_run=$((tests_run + 1))
+if [ "$openstaand" -gt 500 ] && [ "$openstaand" -lt 700 ]; then
+    printf 'ok   al geschreven bytes worden van de reservering afgetrokken (%s van 1000 KB open)\n' "$openstaand"
+else
+    printf 'FAIL de verrekening klopt niet: %s KB open bij 1000 gereserveerd en 400 geschreven\n' "$openstaand" >&2
+    tests_failed=$((tests_failed + 1))
+fi
+expect_equal "de eigen regel telt niet mee bij een hernieuwde reservering" "0" \
+    "$(cat "$VERREKEN_STATE/eigen-regel")"
 
 KAPOT_ROOT="$WORKROOT/kapot-manifest"
 mkdir -p "$KAPOT_ROOT/20260801-120000-1" "$KAPOT_ROOT/20260813-120000-2/site1"
@@ -324,7 +345,7 @@ gesloten_status=0
 (
     WP2SHELL_STATE_DIR="$WORKROOT/blokkade/state"
     WP2SHELL_PARALLEL_JOBS=4
-    backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1
+    backup_reserve_space 10 "$WORKROOT/worker-c" >/dev/null 2>&1
 ) || gesloten_status=1
 expect_equal "een onbeschrijfbaar grootboek blokkeert de reservering bij parallel draaien" "1" "$gesloten_status"
 
@@ -332,7 +353,7 @@ sequentieel_status=0
 (
     WP2SHELL_STATE_DIR="$WORKROOT/blokkade/state"
     WP2SHELL_PARALLEL_JOBS=1
-    backup_reserve_space 10 "$WORKROOT" >/dev/null 2>&1
+    backup_reserve_space 10 "$WORKROOT/worker-c" >/dev/null 2>&1
 ) || sequentieel_status=1
 expect_equal "sequentieel draaien loopt door zonder grootboek, want er is geen tweede worker" "0" "$sequentieel_status"
 
