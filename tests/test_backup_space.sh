@@ -433,6 +433,21 @@ acquire_run_lock "$LOCKBEWIJS" >/dev/null 2>&1 || lockbewijs_status=1
 expect_equal "een bestaand bestand zonder markering wordt geweigerd als slot" "1" "$lockbewijs_status"
 expect_equal "de inhoud van dat bestand is onaangeroerd" "kostbare configuratie" "$(cat "$LOCKBEWIJS")"
 
+VALSTRIK="$WORKROOT/valstrik-slot"
+printf '123\ncritical-setting=yes\n' > "$VALSTRIK"
+valstrik_status=0
+acquire_run_lock "$VALSTRIK" >/dev/null 2>&1 || valstrik_status=1
+expect_equal "een klein bestand dat begint met cijfers maar meer bevat wordt geweigerd" "1" "$valstrik_status"
+expect_equal "de inhoud daarvan is onaangeroerd" "123
+critical-setting=yes" "$(cat "$VALSTRIK")"
+
+OUD_SLOT="$WORKROOT/oud-slot"
+printf '12345\n' > "$OUD_SLOT"
+oud_status=0
+acquire_run_lock "$OUD_SLOT" >/dev/null 2>&1 || oud_status=1
+expect_equal "een slot van de vorige versie wordt wel overgenomen" "0" "$oud_status"
+release_run_lock
+
 : > "$WP2SHELL_FINDINGS_FILE"
 onmeetbaar_status=0
 (

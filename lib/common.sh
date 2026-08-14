@@ -419,14 +419,15 @@ lock_path_is_acceptable() {
     if [ "$first" = "$WP2SHELL_LOCK_MARKER" ]; then
         return 0
     fi
-    case $first in
-        ''|*[!0-9]*) : ;;
-        *)
-            if [ "$size" -le 32 ]; then
-                return 0
-            fi
-            ;;
-    esac
+    if [ "$size" -le 32 ]; then
+        local volledig
+        volledig=$(cat -- "$lock_path" 2>/dev/null) || volledig=''
+        case $volledig in
+            *$'\n'*) : ;;
+            ''|*[!0-9]*) : ;;
+            *) return 0 ;;
+        esac
+    fi
     log_error "Het opgegeven bestand is geen lockbestand van wp2shell en wordt niet aangeraakt: $lock_path"
     return 1
 }
