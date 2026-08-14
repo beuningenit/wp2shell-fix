@@ -369,6 +369,37 @@ WP2SHELL_CONFIG_FILE="$KAPOT2_CONF" "$REPO_ROOT/tools/prune-backups.sh" \
 expect_equal "een onleesbaar archief telt niet als herstelpunt" "aanwezig" \
     "$([ -f "$KAPOT2_ROOT/20260801-120000-1/site1/manifest.json" ] && printf 'aanwezig' || printf 'weg')"
 
+: > "$WP2SHELL_FINDINGS_FILE"
+reservering_status=0
+(
+    WP2SHELL_STATE_DIR="$WORKROOT/blokkade/state"
+    WP2SHELL_PARALLEL_JOBS=4
+    WP2SHELL_BACKUP_FREE_MARGIN_PERCENT=1
+    backup_space_is_sufficient "$SITE" "$WORKROOT" >/dev/null 2>&1
+) || reservering_status=$?
+expect_equal "een mislukte reservering slaat de site over" "1" "$reservering_status"
+tests_run=$((tests_run + 1))
+if grep -q '"category":"backup-reservation-unavailable"' "$WP2SHELL_FINDINGS_FILE"; then
+    printf 'ok   dat wordt als reserveringsprobleem gemeld en niet als ruimtegebrek\n'
+else
+    printf 'FAIL een mislukte reservering wordt verkeerd gerapporteerd\n' >&2
+    tests_failed=$((tests_failed + 1))
+fi
+tests_run=$((tests_run + 1))
+if grep -q '"category":"backup-space-insufficient"' "$WP2SHELL_FINDINGS_FILE"; then
+    printf 'FAIL er wordt ten onrechte ruimtegebrek gemeld\n' >&2
+    tests_failed=$((tests_failed + 1))
+else
+    printf 'ok   er wordt geen ruimtegebrek gemeld terwijl er ruimte is\n'
+fi
+
+LOCKBEWIJS="$WORKROOT/klein-systeembestand"
+printf 'kostbare configuratie\n' > "$LOCKBEWIJS"
+lockbewijs_status=0
+acquire_run_lock "$LOCKBEWIJS" >/dev/null 2>&1 || lockbewijs_status=1
+expect_equal "een bestaand bestand zonder markering wordt geweigerd als slot" "1" "$lockbewijs_status"
+expect_equal "de inhoud van dat bestand is onaangeroerd" "kostbare configuratie" "$(cat "$LOCKBEWIJS")"
+
 printf '%s tests, %s mislukt\n' "$tests_run" "$tests_failed"
 if [ "$tests_failed" -gt 0 ]; then
     exit 1

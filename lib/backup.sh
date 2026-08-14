@@ -355,8 +355,21 @@ backup_space_is_sufficient() {
         log_warn "Kon de omvang van de database voor $site_path niet vaststellen, de ruimtecontrole rekent alleen met de bestanden"
     fi
     needed=$(((site_size + database_size) + ((site_size + database_size) * margin / 100)))
-    if [ "$available" -ge "$needed" ] && backup_reserve_space "$needed" "$backup_dir"; then
-        return 0
+    if [ "$available" -ge "$needed" ]; then
+        if backup_reserve_space "$needed" "$backup_dir"; then
+            return 0
+        fi
+        record_finding \
+            "site=$site_path" \
+            "severity=$SEVERITY_MEDIUM" \
+            "confidence=$CONFIDENCE_HIGH" \
+            "category=backup-reservation-unavailable" \
+            "title=De ruimtereservering tussen gelijktijdige backups werkt niet" \
+            "detail=Er is voldoende schijfruimte, maar het grootboek dat de behoefte van gelijktijdige workers bijhoudt kon niet aangemaakt, vergrendeld of bijgewerkt worden. Bij parallelle verwerking zouden meerdere backups dan onafhankelijk van elkaar groen krijgen en samen de schijf kunnen vullen. Deze site is daarom overgeslagen en niet gewijzigd." \
+            "evidence=beschikbaar $((available / 1024)) MB, nodig $((needed / 1024)) MB, grootboek $(backup_reservation_file)" \
+            "remediation=Controleer of de state-map bestaat en beschrijfbaar is en of flock beschikbaar is. Een run zonder --parallel heeft dit grootboek niet nodig." \
+            "action=skipped"
+        return 1
     fi
     log_error "Te weinig vrije ruimte voor een backup van $site_path: $((available / 1024)) MB beschikbaar, $((needed / 1024)) MB nodig"
     record_finding \
